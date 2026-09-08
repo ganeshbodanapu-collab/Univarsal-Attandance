@@ -1,0 +1,148 @@
+{
+  "sites": [
+    {
+      "code": "BGM",
+      "name": "BGM",
+      "location": "Mandapadu",
+      "inCharge": "Ganesh",
+      "mobile": "7993477911",
+      "status": "active",
+      "createdDate": "2026-09-08",
+      "id": "S001"
+    }
+  ],
+  "sections": [
+    {
+      "code": "T",
+      "name": "T Section",
+      "siteId": "S001",
+      "inCharge": "Naga Lakshmi",
+      "mobile": "7894561231",
+      "status": "active",
+      "createdDate": "2026-09-08",
+      "id": "SEC001"
+    }
+  ],
+  "workers": [
+    {
+      "id": "01BGM - Narayana Swami 9789",
+      "serialNumber": "01BGM",
+      "name": "Narayana Swami",
+      "mobile": "7894561231",
+      "workerType": "company",
+      "currentSiteId": "S001",
+      "currentSectionId": "SEC001",
+      "joiningDate": "2026-09-08",
+      "dailyWage": 850,
+      "referrerId": null,
+      "commissionType": "perDay",
+      "commissionRate": 0,
+      "attendanceModes": [
+        "face",
+        "fingerprint",
+        "manual"
+      ],
+      "status": "active",
+      "idProofNumber": "1234 5678 9789",
+      "address": "Komarra",
+      "phonePeNumber": "7894561236",
+      "bankName": "ICICI",
+      "bankAccountNo": "789456123456",
+      "bankIfsc": "ICICI05982",
+      "bankHolderName": "N",
+      "photoUrl": "https://images.unsplash.com/photo-1541888946425-d0fbb186156a?w=400&auto=format&fit=crop&q=80",
+      "faceEnrolled": true,
+      "fingerprintEnrolled": true
+    }
+  ],
+  "assignments": [
+    {
+      "id": "ASG4820",
+      "workerId": "01BGM - Narayana Swami 9789",
+      "siteId": "S001",
+      "sectionId": "SEC001",
+      "fromDate": "2026-09-08",
+      "toDate": null,
+      "reason": "Initial onboard assignment"
+    }
+  ],
+  "employment_history": [
+    {
+      "id": "EMP8899",
+      "workerId": "01BGM - Narayana Swami 9789",
+      "date": "2026-09-08",
+      "event": "joined",
+      "siteId": "S001",
+      "sectionId": "SEC001",
+      "remarks": "New employee onboarding to section"
+    }
+  ],
+  "attendance": [
+    {
+      "workerId": "01BGM - Narayana Swami 9789",
+      "assignmentId": "ASG4820",
+      "date": "2026-09-08",
+      "status": "present",
+      "method": "face",
+      "checkIn": "12:30",
+      "checkOut": "17:30",
+      "markedBy": "Ganesh",
+      "siteId": "S001",
+      "sectionId": "SEC001",
+      "id": "ATT00001"
+    }
+  ],
+  "advances": [],
+  "recoveries": [],
+  "referrers": [],
+  "payments": [],
+  "settlements": [],
+  "food_orders": [],
+  "commission_requests": [],
+  "site_migrations": [],
+  "users": [
+    {
+      "id": "U001",
+      "username": "admin",
+      "password": "Admin@2026",
+      "name": "System Admin",
+      "role": "admin",
+      "siteId": "all",
+      "sectionId": "all",
+      "isActive": true,
+      "createdAt": "2026-09-08T06:24:51.084Z",
+      "lastLogin": "9/8/2026, 12:29:16 PM"
+    },
+    {
+      "name": "Ganesh",
+      "username": "bgm",
+      "password": "BGM@1729",
+      "role": "supervisor",
+      "assignedSiteId": "S001",
+      "assignedSectionId": "SEC001",
+      "teamName": "T Section Team",
+      "mobile": "",
+      "email": "",
+      "status": "active",
+      "createdDate": "2026-09-08",
+      "id": "U002",
+      "lastLogin": "9/8/2026, 12:30:23 PM"
+    }
+  ],
+  "settings": {
+    "foodPresentRate": 1,
+    "foodHalfDayRate": 0.5,
+    "foodAbsentRate": 0,
+    "foodLeaveRate": 0,
+    "wagePresentMultiplier": 1,
+    "wageHalfDayMultiplier": 0.5,
+    "wageAbsentMultiplier": 0,
+    "commissionPresentMultiplier": 1,
+    "commissionHalfDayMultiplier": 0.5,
+    "commissionAbsentMultiplier": 0,
+    "allowDailyRecovery": true,
+    "allowMonthlyRecovery": true,
+    "allowPercentageRecovery": true,
+    "allowManualRecovery": true
+  }
+}
