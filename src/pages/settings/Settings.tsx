@@ -32,6 +32,8 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import type { AppUser } from '../../types';
+import { authService } from '../../lib/auth';
+
 
 export const Settings: React.FC = () => {
   const {
@@ -104,7 +106,7 @@ export const Settings: React.FC = () => {
     setNewSupPassword(pass);
   };
 
-  const handleCreateSupervisor = (e: React.FormEvent) => {
+  const handleCreateSupervisor = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanUser = newSupUsername.trim().toLowerCase();
     if (!newSupName.trim() || !cleanUser || !newSupPassword.trim()) {
@@ -128,21 +130,40 @@ export const Settings: React.FC = () => {
     const assignedSite = sites.find((s) => s.id === newSupSiteId) || sites[0];
     const assignedSec = sections.find((s) => s.id === newSupSectionId) || sections.find((s) => s.siteId === assignedSite?.id);
 
-    const created = addAppUser({
+    const res = await authService.adminCreateUser({
       name: newSupName.trim(),
       username: cleanUser,
-      password: newSupPassword,
+      password: newSupPassword.trim(),
       role: 'supervisor',
       assignedSiteId: assignedSite?.id || '',
       assignedSectionId: assignedSec?.id || '',
-      teamName: assignedSec ? `${assignedSec.name} Team` : 'Site Team',
       mobile: newSupMobile.trim(),
       email: newSupEmail.trim(),
-      status: 'active',
-      createdDate: new Date().toISOString().split('T')[0],
     });
 
-    setToastMessage(`✓ Site Supervisor "${created.name}" created! User ID: "${cleanUser}"`);
+    if (!res.success) {
+      alert(`Failed to create site supervisor: ${res.error}`);
+      return;
+    }
+
+    if (res.appUser) {
+      const created = addAppUser({
+        name: res.appUser.name,
+        username: res.appUser.username,
+        password: '',
+        role: 'supervisor',
+        assignedSiteId: res.appUser.assigned_site_id || '',
+        assignedSectionId: res.appUser.assigned_section_id || '',
+        teamName: assignedSec ? `${assignedSec.name} Team` : 'Site Team',
+        mobile: res.appUser.mobile || '',
+        email: res.appUser.email || '',
+        status: 'active',
+        createdDate: new Date().toISOString().split('T')[0],
+      });
+      setSelectedUserId(created.id);
+    }
+
+    setToastMessage(`✓ Site Supervisor "${newSupName.trim()}" created in Supabase Auth! User ID: "${cleanUser}"`);
     setShowAddSupervisorModal(false);
     setNewSupName('');
     setNewSupUsername('');
@@ -151,8 +172,8 @@ export const Settings: React.FC = () => {
     setNewSupSectionId('');
     setNewSupMobile('');
     setNewSupEmail('');
-    setSelectedUserId(created.id);
   };
+
 
   const handleDeleteSupervisor = (userId: string, supName: string) => {
     if (!window.confirm(`Are you sure you want to delete supervisor account "${supName}"?`)) return;
@@ -340,17 +361,19 @@ export const Settings: React.FC = () => {
     );
   };
 
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
+
   // Save Password
-  const handleSavePassword = (e: React.FormEvent) => {
+  const handleSavePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeUser) return;
+    if (!activeUser || isSavingPassword) return;
 
     if (!newPassword.trim()) {
       alert('Please enter a new password.');
       return;
     }
 
-    if (newPassword.length < 6) {
+    if (newPassword.trim().length < 6) {
       alert('Password must be at least 6 characters long for security.');
       return;
     }
@@ -360,13 +383,38 @@ export const Settings: React.FC = () => {
       return;
     }
 
-    updateAppUser(activeUser.id, { password: newPassword });
-    setNewPassword('');
-    setConfirmPassword('');
-    setToastMessage(
-      `Password updated successfully for ${activeUser.role === 'admin' ? 'Administrator (' + activeUser.username + ')' : activeUser.name}!`
-    );
+    setIsSavingPassword(true);
+    try {
+      const isSelf = currentUser?.id === activeUser.id;
+
+      if (isSelf) {
+        const { success, error } = await authService.changePassword(newPassword.trim());
+        if (!success) {
+          alert(`Password change failed: ${error || 'Please try again.'}`);
+          return;
+        }
+      } else {
+        const { success, error } = await authService.adminChangeUserPassword(
+          activeUser.username,
+          newPassword.trim()
+        );
+        if (!success) {
+          alert(`Password change failed: ${error || 'Please try again.'}`);
+          return;
+        }
+      }
+
+      updateAppUser(activeUser.id, {});
+      setNewPassword('');
+      setConfirmPassword('');
+      setToastMessage(
+        `Password changed successfully in Supabase Auth for ${activeUser.role === 'admin' ? 'Administrator (' + activeUser.username + ')' : activeUser.name}!`
+      );
+    } finally {
+      setIsSavingPassword(false);
+    }
   };
+
 
   // Save Team Changing Option (Supervisors only)
   const handleSaveTeamChange = (e: React.FormEvent) => {

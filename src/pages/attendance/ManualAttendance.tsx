@@ -107,7 +107,11 @@ export const ManualAttendance: React.FC = () => {
     setSheetState((prev) => ({ ...prev, ...updated }));
   };
 
-  const handleSave = () => {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSave = async () => {
+    if (isSubmitting) return;
+
     // Validate that if there's a status modification to an existing record, a reason has been typed
     const modifiedWithoutReason: string[] = [];
 
@@ -130,17 +134,22 @@ export const ManualAttendance: React.FC = () => {
       return;
     }
 
-    // Convert sheetState to record format
-    const records = Object.entries(sheetState).map(([workerId, status]) => ({
-      workerId,
-      status,
-    }));
+    setIsSubmitting(true);
+    try {
+      // Convert sheetState to record format
+      const records = Object.entries(sheetState).map(([workerId, status]) => ({
+        workerId,
+        status,
+      }));
 
-    bulkSaveAttendance(date, selectedSiteId, selectedSectionId, records, currentUser?.name || 'Supervisor', reasons);
-    setToastMessage(`Manual attendance sheet saved for ${date}!`);
+      await bulkSaveAttendance(date, selectedSiteId, selectedSectionId, records, currentUser?.name || 'Supervisor', reasons);
+      setToastMessage(`Manual attendance sheet saved for ${date}!`);
 
-    // Reload sheet to fetch updated values
-    handleLoadSheet();
+      // Reload sheet to fetch updated values
+      handleLoadSheet();
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (

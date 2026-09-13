@@ -1,5 +1,6 @@
-import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import React, { useEffect } from 'react';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { App as CapApp } from '@capacitor/app';
 import { MainLayout } from '../components/layout/MainLayout';
 import { Dashboard } from '../pages/dashboard/Dashboard';
 import { Sites, SiteDetails } from '../pages/sites/Sites';
@@ -21,12 +22,46 @@ import { MultipleSitesEmployees } from '../pages/workers/MultipleSitesEmployees'
 
 import { useAttendanceContext } from '../context/AttendanceContext';
 import { SiteLogin } from '../pages/auth/SiteLogin';
+import { ApprovalCallback } from '../pages/auth/ApprovalCallback';
 
 export const AppRoutes: React.FC = () => {
   const { currentUser } = useAttendanceContext();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let listener: any = null;
+
+    const setupListener = async () => {
+      listener = await CapApp.addListener('backButton', ({ canGoBack }) => {
+        if (location.pathname === '/dashboard' || location.pathname === '/login' || location.pathname === '/') {
+          // At root/home screen, minimize app instead of breaking navigation
+          CapApp.minimizeApp();
+        } else if (canGoBack) {
+          navigate(-1);
+        } else {
+          navigate('/dashboard');
+        }
+      });
+    };
+
+    setupListener().catch(() => {
+      // Ignore if running on web without Capacitor native plugin
+    });
+
+    return () => {
+      if (listener && typeof listener.remove === 'function') {
+        listener.remove();
+      }
+    };
+  }, [location.pathname, navigate]);
+
 
   return (
     <Routes>
+      {/* Approval Callback Deep Link Gateway */}
+      <Route path="/auth/approved" element={<ApprovalCallback />} />
+
       {/* Site Selection & Login Gateway */}
       <Route
         path="/login"

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type {
   Site,
   Section,
@@ -21,20 +21,30 @@ import type {
   WorkerOpeningRecord,
   SiteMigrationRecord,
 } from '../types';
-import { mockSites } from '../data/mock/sites';
-import { mockSections } from '../data/mock/sections';
-import { mockWorkers, mockWorkerAssignments, mockEmploymentHistory } from '../data/mock/workers';
-import { mockAttendance, mockAttendanceAudits } from '../data/mock/attendance';
-import { mockAdvances, mockRecoveries } from '../data/mock/advances';
-import { mockReferrers } from '../data/mock/referrers';
-import { mockPayments } from '../data/mock/payments';
-import { mockSettlements } from '../data/mock/settlements';
-import { mockAppUsers } from '../data/mock/users';
-import { mockFoodOrders } from '../data/mock/foodOrders';
-import { mockCommissionRequests } from '../data/mock/commissionRequests';
-import { mockSiteMigrations } from '../data/mock/migrations';
 import { defaultSettings } from '../utils/calculations/calculateFood';
 import { calculateDailyRecovery } from '../utils/calculations/calculateAdvanceBalance';
+import { roundMoney, addMoney, subtractMoney } from '../utils/money';
+import { sitesDataService } from '../lib/data/sites';
+import { sectionsDataService } from '../lib/data/sections';
+import { workersDataService } from '../lib/data/workers';
+import { workerAssignmentsDataService } from '../lib/data/workerAssignments';
+import { workerOpeningRecordsDataService } from '../lib/data/workerOpeningRecords';
+import { employmentHistoryDataService } from '../lib/data/employmentHistory';
+import { siteMigrationsDataService } from '../lib/data/siteMigrations';
+import { attendanceDataService } from '../lib/data/attendance';
+import { attendanceAuditsDataService } from '../lib/data/attendanceAudits';
+import { attendanceSettingsDataService } from '../lib/data/attendanceSettings';
+import { advancesDataService } from '../lib/data/advances';
+import { recoveriesDataService } from '../lib/data/recoveries';
+import { ledgerDataService } from '../lib/data/ledger';
+import { workerPaymentsDataService } from '../lib/data/workerPayments';
+import { monthlySettlementsDataService } from '../lib/data/monthlySettlements';
+import { sectionFoodOrdersDataService } from '../lib/data/sectionFoodOrders';
+import { referrersDataService } from '../lib/data/referrers';
+import { commissionPaymentRequestsDataService } from '../lib/data/commissionPaymentRequests';
+import { realtimeService, type RealtimeStatus } from '../lib/realtime';
+import { supabase } from '../lib/supabase';
+import { useAuth } from './AuthContext';
 
 interface AttendanceContextType {
   sites: Site[];
@@ -51,9 +61,10 @@ interface AttendanceContextType {
   payments: WorkerPayment[];
   settlementRecords: MonthlySettlementRecord[];
   currentUser: AppUser | null;
+  setCurrentUser: React.Dispatch<React.SetStateAction<AppUser | null>>;
   appUsers: AppUser[];
   switchUser: (userId: string) => void;
-  loginWithCredentials: (username: string, password: string, targetSiteId?: string) => { success: boolean; message?: string; user?: AppUser };
+  loginWithCredentials: (username: string, password: string, targetSiteId?: string) => Promise<{ success: boolean; message?: string; user?: AppUser }> | { success: boolean; message?: string; user?: AppUser };
   logout: () => void;
   addAppUser: (user: Omit<AppUser, 'id'>) => AppUser;
   updateAppUser: (id: string, updates: Partial<AppUser>) => void;
@@ -137,20 +148,10 @@ interface AttendanceContextType {
   addSiteMigration: (migration: Omit<SiteMigrationRecord, 'id' | 'createdAt'>) => SiteMigrationRecord;
   deleteSiteMigration: (id: string) => void;
   resetToDefaultData: () => void;
+  realtimeStatus: RealtimeStatus;
 }
 
-function loadFromStorage<T>(key: string, fallback: T): T {
-  try {
-    const saved = localStorage.getItem(key);
-    if (saved) {
-      return JSON.parse(saved);
-    }
-  } catch (err) {
-    console.error(`Error reading ${key} from storage:`, err);
-  }
-  return fallback;
-}
-
+/*
 function saveToStorage<T>(key: string, data: T) {
   try {
     localStorage.setItem(key, JSON.stringify(data));
@@ -158,65 +159,32 @@ function saveToStorage<T>(key: string, data: T) {
     console.error(`Error saving ${key} to storage:`, err);
   }
 }
+*/
+
 
 const AttendanceContext = createContext<AttendanceContextType | undefined>(undefined);
 
 export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Auto-clear old mock data if this is the first load after the clean-slate update
-  // Version key: bump this string to force a localStorage wipe for all users
-  const DATA_VERSION = 'v2.0-clean';
-  const storedVersion = localStorage.getItem('univarsal_data_version');
-  if (storedVersion !== DATA_VERSION) {
-    const keysToRemove = [
-      'univarsal_sites_data', 'univarsal_sections_data', 'univarsal_workers_data',
-      'univarsal_assignments_data', 'univarsal_employment_history_data',
-      'univarsal_attendance_data', 'univarsal_audits_data', 'univarsal_settings_data',
-      'univarsal_advances_data', 'univarsal_recoveries_data', 'univarsal_referrers_data',
-      'univarsal_payments_data', 'univarsal_settlements_data', 'univarsal_food_orders_data',
-      'univarsal_commission_requests_data', 'univarsal_site_migrations_data', 'univarsal_app_users_data',
-    ];
-    keysToRemove.forEach((k) => localStorage.removeItem(k));
-    localStorage.setItem('univarsal_data_version', DATA_VERSION);
-  }
+  // Pure Supabase Production Data Authority (No Business LocalStorage Fallback)
+  const [sites, setSites] = useState<Site[]>([]);
+  const [sections, setSections] = useState<Section[]>([]);
+  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [assignments, setAssignments] = useState<WorkerAssignment[]>([]);
+  const [employmentHistory, setEmploymentHistory] = useState<EmploymentHistory[]>([]);
+  const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const [audits, setAudits] = useState<AttendanceAudit[]>([]);
+  const [settings, setSettings] = useState<AttendanceSettings>(defaultSettings);
+  const [advances, setAdvances] = useState<Advance[]>([]);
+  const [recoveries, setRecoveries] = useState<Recovery[]>([]);
+  const [referrers, setReferrers] = useState<Referrer[]>([]);
+  const [payments, setPayments] = useState<WorkerPayment[]>([]);
+  const [settlementRecords, setSettlementRecords] = useState<MonthlySettlementRecord[]>([]);
+  const [foodOrders, setFoodOrders] = useState<SectionFoodOrder[]>([]);
+  const [commissionRequests, setCommissionRequests] = useState<CommissionPaymentRequest[]>([]);
+  const [siteMigrations, setSiteMigrations] = useState<SiteMigrationRecord[]>([]);
 
-  const [sites, setSites] = useState<Site[]>(() => loadFromStorage('univarsal_sites_data', mockSites));
-  const [sections, setSections] = useState<Section[]>(() => loadFromStorage('univarsal_sections_data', mockSections));
-  const [workers, setWorkers] = useState<Worker[]>(() => loadFromStorage('univarsal_workers_data', mockWorkers));
-  const [assignments, setAssignments] = useState<WorkerAssignment[]>(() => loadFromStorage('univarsal_assignments_data', mockWorkerAssignments));
-  const [employmentHistory, setEmploymentHistory] = useState<EmploymentHistory[]>(() => loadFromStorage('univarsal_employment_history_data', mockEmploymentHistory));
-  const [attendance, setAttendance] = useState<Attendance[]>(() => loadFromStorage('univarsal_attendance_data', mockAttendance));
-  const [audits, setAudits] = useState<AttendanceAudit[]>(() => loadFromStorage('univarsal_audits_data', mockAttendanceAudits));
-  const [settings, setSettings] = useState<AttendanceSettings>(() => loadFromStorage('univarsal_settings_data', defaultSettings));
-  const [advances, setAdvances] = useState<Advance[]>(() => loadFromStorage('univarsal_advances_data', mockAdvances));
-  const [recoveries, setRecoveries] = useState<Recovery[]>(() => loadFromStorage('univarsal_recoveries_data', mockRecoveries));
-  const [referrers, setReferrers] = useState<Referrer[]>(() => loadFromStorage('univarsal_referrers_data', mockReferrers));
-  const [payments, setPayments] = useState<WorkerPayment[]>(() => loadFromStorage('univarsal_payments_data', mockPayments));
-  const [settlementRecords, setSettlementRecords] = useState<MonthlySettlementRecord[]>(() => loadFromStorage('univarsal_settlements_data', mockSettlements));
-  const [foodOrders, setFoodOrders] = useState<SectionFoodOrder[]>(() => loadFromStorage('univarsal_food_orders_data', mockFoodOrders));
-  const [commissionRequests, setCommissionRequests] = useState<CommissionPaymentRequest[]>(() => loadFromStorage('univarsal_commission_requests_data', mockCommissionRequests));
-  const [siteMigrations, setSiteMigrations] = useState<SiteMigrationRecord[]>(() => loadFromStorage('univarsal_site_migrations_data', mockSiteMigrations));
-
-  // App Auth/Role State & Site-wise Credentials
-  const [appUsers, setAppUsers] = useState<AppUser[]>(() => loadFromStorage('univarsal_app_users_data', mockAppUsers));
-
-  // Auto-persist state changes to localStorage and Backend API
-  useEffect(() => { saveToStorage('univarsal_sites_data', sites); }, [sites]);
-  useEffect(() => { saveToStorage('univarsal_sections_data', sections); }, [sections]);
-  useEffect(() => { saveToStorage('univarsal_workers_data', workers); }, [workers]);
-  useEffect(() => { saveToStorage('univarsal_assignments_data', assignments); }, [assignments]);
-  useEffect(() => { saveToStorage('univarsal_employment_history_data', employmentHistory); }, [employmentHistory]);
-  useEffect(() => { saveToStorage('univarsal_attendance_data', attendance); }, [attendance]);
-  useEffect(() => { saveToStorage('univarsal_audits_data', audits); }, [audits]);
-  useEffect(() => { saveToStorage('univarsal_settings_data', settings); }, [settings]);
-  useEffect(() => { saveToStorage('univarsal_advances_data', advances); }, [advances]);
-  useEffect(() => { saveToStorage('univarsal_recoveries_data', recoveries); }, [recoveries]);
-  useEffect(() => { saveToStorage('univarsal_referrers_data', referrers); }, [referrers]);
-  useEffect(() => { saveToStorage('univarsal_payments_data', payments); }, [payments]);
-  useEffect(() => { saveToStorage('univarsal_settlements_data', settlementRecords); }, [settlementRecords]);
-  useEffect(() => { saveToStorage('univarsal_food_orders_data', foodOrders); }, [foodOrders]);
-  useEffect(() => { saveToStorage('univarsal_commission_requests_data', commissionRequests); }, [commissionRequests]);
-  useEffect(() => { saveToStorage('univarsal_site_migrations_data', siteMigrations); }, [siteMigrations]);
-  useEffect(() => { saveToStorage('univarsal_app_users_data', appUsers); }, [appUsers]);
+  // App Auth/Role State
+  const [appUsers, setAppUsers] = useState<AppUser[]>([]);
 
   // Backend API Sync
   const [isBackendConnected, setIsBackendConnected] = useState(false);
@@ -254,6 +222,162 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         console.warn('Backend server disconnected, using local storage mode:', err.message);
         setIsBackendConnected(false);
       });
+  }, []);
+
+  // Supabase Data Sync (STEP 14 Sites & Sections, STEP 15 Workers & History, STEP 16 Attendance & Settings, STEP 17 Advances & Recoveries)
+  const syncFromSupabase = useCallback(async () => {
+    try {
+      const [
+        sitesRes,
+        sectionsRes,
+        workersRes,
+        asgRes,
+        empHistRes,
+        migRes,
+        openingRes,
+        attRes,
+        auditsRes,
+        settingsRes,
+        advancesRes,
+        recoveriesRes,
+        paymentsRes,
+        settlementsRes,
+        foodOrdersRes,
+        referrersRes,
+        commissionReqsRes,
+      ] = await Promise.all([
+        sitesDataService.listSites(),
+        sectionsDataService.listSections(),
+        workersDataService.listWorkers(),
+        workerAssignmentsDataService.listWorkerAssignments(),
+        employmentHistoryDataService.listEmploymentHistory(),
+        siteMigrationsDataService.listSiteMigrations(),
+        workerOpeningRecordsDataService.listWorkerOpeningRecords(),
+        attendanceDataService.listAttendance(),
+        attendanceAuditsDataService.listAttendanceAudits(),
+        attendanceSettingsDataService.getAttendanceSettings(),
+        advancesDataService.listAdvances(),
+        recoveriesDataService.listRecoveries(),
+        workerPaymentsDataService.listWorkerPayments(),
+        monthlySettlementsDataService.listMonthlySettlements(),
+        sectionFoodOrdersDataService.listSectionFoodOrders(),
+        referrersDataService.listReferrers(),
+        commissionPaymentRequestsDataService.listCommissionPaymentRequests(),
+      ]);
+      if (sitesRes.data) setSites(sitesRes.data);
+      if (sectionsRes.data) setSections(sectionsRes.data);
+      if (asgRes.data) setAssignments(asgRes.data);
+      if (empHistRes.data) setEmploymentHistory(empHistRes.data);
+      if (migRes.data) setSiteMigrations(migRes.data);
+      if (attRes.data) setAttendance(attRes.data);
+      if (auditsRes.data) setAudits(auditsRes.data);
+      if (settingsRes.data) setSettings(settingsRes.data);
+      if (advancesRes.data) setAdvances(advancesRes.data);
+      if (recoveriesRes.data) setRecoveries(recoveriesRes.data);
+      if (paymentsRes.data) setPayments(paymentsRes.data);
+      if (settlementsRes.data) setSettlementRecords(settlementsRes.data);
+      if (foodOrdersRes.data) setFoodOrders(foodOrdersRes.data);
+      if (referrersRes.data) setReferrers(referrersRes.data);
+      if (commissionReqsRes.data) setCommissionRequests(commissionReqsRes.data);
+      if (workersRes.data) {
+        let loadedWorkers = workersRes.data;
+        if (openingRes.data && openingRes.data.length > 0) {
+          const openingMap = new Map(openingRes.data.map((o) => [o.workerId, o]));
+          loadedWorkers = loadedWorkers.map((w) => {
+            const op = openingMap.get(w.id);
+            return op ? { ...w, openingRecord: op } : w;
+          });
+        }
+        setWorkers(loadedWorkers);
+      }
+    } catch (err) {
+      console.warn('Supabase data sync notice:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    syncFromSupabase();
+  }, [syncFromSupabase]);
+
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('DISCONNECTED');
+
+  // Supabase Realtime Live Subscription (STEP 22: attendance, section_food_orders, advances, site_migrations)
+  useEffect(() => {
+    const unsubscribe = realtimeService.subscribeToRealtime({
+      onStatusChange: (status) => {
+        setRealtimeStatus(status);
+      },
+      onAttendanceChange: (event, record) => {
+        if (event === 'DELETE') {
+          setAttendance((prev) => prev.filter((a) => a.id !== record.id));
+        } else {
+          setAttendance((prev) => {
+            const idx = prev.findIndex(
+              (a) => a.id === record.id || (a.workerId === record.workerId && a.date === record.date)
+            );
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx]!, ...record };
+              return updated;
+            }
+            return [record, ...prev];
+          });
+        }
+      },
+      onFoodOrderChange: (event, record) => {
+        if (event === 'DELETE') {
+          setFoodOrders((prev) => prev.filter((o) => o.id !== record.id));
+        } else {
+          setFoodOrders((prev) => {
+            const idx = prev.findIndex(
+              (o) =>
+                o.id === record.id ||
+                (o.sectionId === record.sectionId && o.date === record.date && o.mealType === record.mealType)
+            );
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx]!, ...record };
+              return updated;
+            }
+            return [record, ...prev];
+          });
+        }
+      },
+      onAdvanceChange: (event, record) => {
+        if (event === 'DELETE') {
+          setAdvances((prev) => prev.filter((adv) => adv.id !== record.id));
+        } else {
+          setAdvances((prev) => {
+            const idx = prev.findIndex((adv) => adv.id === record.id);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx]!, ...record };
+              return updated;
+            }
+            return [record, ...prev];
+          });
+        }
+      },
+      onSiteMigrationChange: (event, record) => {
+        if (event === 'DELETE') {
+          setSiteMigrations((prev) => prev.filter((m) => m.id !== record.id));
+        } else {
+          setSiteMigrations((prev) => {
+            const idx = prev.findIndex((m) => m.id === record.id);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx]!, ...record };
+              return updated;
+            }
+            return [record, ...prev];
+          });
+        }
+      },
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   // Sync state to backend when any collection changes
@@ -332,107 +456,156 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       'univarsal_app_users_data',
     ];
     keys.forEach((k) => localStorage.removeItem(k));
-    setSites(mockSites);
-    setSections(mockSections);
-    setWorkers(mockWorkers);
-    setAssignments(mockWorkerAssignments);
-    setEmploymentHistory(mockEmploymentHistory);
-    setAttendance(mockAttendance);
-    setAudits(mockAttendanceAudits);
-    setSettings(defaultSettings);
-    setAdvances(mockAdvances);
-    setRecoveries(mockRecoveries);
-    setReferrers(mockReferrers);
-    setPayments(mockPayments);
-    setSettlementRecords(mockSettlements);
-    setFoodOrders(mockFoodOrders);
-    setCommissionRequests(mockCommissionRequests);
-    setSiteMigrations(mockSiteMigrations);
-    setAppUsers(mockAppUsers);
+    // Trigger fresh data sync directly from Supabase PostgreSQL database
+    syncFromSupabase();
   };
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
-    try {
-      const saved = localStorage.getItem('univarsal_user_session');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Load persisted appUsers to find the current user (handles dynamically added users)
-        const storedUsers: AppUser[] = loadFromStorage('univarsal_app_users_data', mockAppUsers);
-        const match = storedUsers.find((u) => u.id === parsed.id);
-        if (match) return match;
-      }
-    } catch {
-      // ignore
-    }
-    return null;
-  });
+
+  const auth = useAuth();
+  const currentUser = auth.appUser;
+  const setCurrentUser = (_user: React.SetStateAction<AppUser | null>) => {
+    auth.refreshProfile();
+  };
 
   const switchUser = (userId: string) => {
     const found = appUsers.find((u) => u.id === userId);
     if (found) {
-      setCurrentUser(found);
-      try {
-        localStorage.setItem(
-          'univarsal_user_session',
-          JSON.stringify({ id: found.id, username: found.username })
-        );
-      } catch {
-        // ignore
-      }
+      console.log(`[AttendanceContext] Switched current display user to ${found.username}`);
     }
   };
 
-  const loginWithCredentials = (username: string, password: string, targetSiteId?: string) => {
+  const loginWithCredentials = async (
+    username: string,
+    password: string,
+    targetSiteId?: string
+  ): Promise<{ success: boolean; message?: string; user?: AppUser }> => {
     const cleanUser = username.trim().toLowerCase();
-    const found = appUsers.find((u) => u.username.toLowerCase() === cleanUser);
-    if (!found) {
-      return { success: false, message: 'Invalid User ID. Please check and try again.' };
+
+    let loginEmail = cleanUser;
+    let foundProfile: any = null;
+
+    if (!cleanUser.includes('@')) {
+      try {
+        const { data: userProfile } = await supabase
+          .from('app_users')
+          .select('*')
+          .ilike('username', cleanUser)
+          .maybeSingle();
+
+        if (userProfile) {
+          foundProfile = userProfile;
+          if (userProfile.email) {
+            loginEmail = userProfile.email;
+          } else {
+            loginEmail = `${cleanUser}@universalattendance.com`;
+          }
+        } else {
+          loginEmail = `${cleanUser}@universalattendance.com`;
+        }
+      } catch {
+        loginEmail = `${cleanUser}@universalattendance.com`;
+      }
     }
-    if (found.password !== password) {
-      return { success: false, message: 'Incorrect Password. Please try again.' };
+
+    // 1. Supabase Auth sign in
+    const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+      email: loginEmail,
+      password: password,
+    });
+
+    if (authErr || !authData.user) {
+      return { success: false, message: 'Invalid User ID or Password.' };
     }
-    if (found.status === 'inactive') {
+
+    // 2. Fetch app_users record
+    let profile = foundProfile;
+    if (!profile || profile.auth_user_id !== authData.user.id) {
+      const { data: fetchedProfile } = await supabase
+        .from('app_users')
+        .select('*')
+        .eq('auth_user_id', authData.user.id)
+        .maybeSingle();
+
+      if (fetchedProfile) {
+        profile = fetchedProfile;
+      } else if (foundProfile) {
+        // Link auth_user_id to foundProfile
+        await supabase
+          .from('app_users')
+          .update({ auth_user_id: authData.user.id, email: loginEmail })
+          .eq('id', foundProfile.id);
+        profile = { ...foundProfile, auth_user_id: authData.user.id, email: loginEmail };
+      }
+    }
+
+    if (!profile) {
+      await supabase.auth.signOut();
+      return { success: false, message: 'Access denied: User profile not found in app database.' };
+    }
+
+    if (profile.status === 'inactive') {
+      await supabase.auth.signOut();
       return { success: false, message: 'This site user account is currently deactivated.' };
     }
 
-    // Role-wise site permission validation
+    // 3. Role-wise site permission validation
     if (targetSiteId && targetSiteId !== 'admin') {
-      if (found.role !== 'admin' && found.assignedSiteId !== targetSiteId) {
+      if (profile.role !== 'admin' && profile.assigned_site_id !== targetSiteId) {
         const targetSiteObj = sites.find((s) => s.id === targetSiteId);
-        const userSiteObj = sites.find((s) => s.id === found.assignedSiteId);
+        const userSiteObj = sites.find((s) => s.id === profile.assigned_site_id);
+        await supabase.auth.signOut();
         return {
           success: false,
-          message: `Access denied. "${found.username}" is assigned to ${userSiteObj?.name || found.assignedSiteId}, not ${targetSiteObj?.name || targetSiteId}.`,
+          message: `Access denied. "${profile.username}" is assigned to ${userSiteObj?.name || profile.assigned_site_id}, not ${targetSiteObj?.name || targetSiteId}.`,
         };
       }
     }
-    if (targetSiteId === 'admin' && found.role !== 'admin') {
+    if (targetSiteId === 'admin' && profile.role !== 'admin') {
+      await supabase.auth.signOut();
       return {
         success: false,
         message: 'Access denied. Only Universal System Admins can log in to the Central Portal.',
       };
     }
 
+    const nowIso = new Date().toISOString();
     const nowStr = new Date().toLocaleString();
-    const updatedUser: AppUser = { ...found, lastLogin: nowStr };
-    setAppUsers((prev) => prev.map((u) => (u.id === found.id ? updatedUser : u)));
-    setCurrentUser(updatedUser);
+
+    // Update last_login in app_users
+    await supabase.from('app_users').update({ last_login: nowIso }).eq('id', profile.id);
+
+    const authenticatedAppUser: AppUser = {
+      id: profile.id,
+      username: profile.username,
+      password: '',
+      name: profile.name,
+      role: profile.role,
+      assignedSiteId: profile.assigned_site_id || undefined,
+      assignedSectionId: profile.assigned_section_id || undefined,
+      teamName: profile.team_name || undefined,
+      mobile: profile.mobile || undefined,
+      email: profile.email || undefined,
+      status: profile.status,
+      lastLogin: nowStr,
+      createdDate: profile.created_at ? profile.created_at.split('T')[0] : undefined,
+    };
+
+    setCurrentUser(authenticatedAppUser);
     try {
       localStorage.setItem(
         'univarsal_user_session',
-        JSON.stringify({ id: updatedUser.id, username: updatedUser.username })
+        JSON.stringify({ id: authenticatedAppUser.id, username: authenticatedAppUser.username })
       );
     } catch {
       // ignore
     }
-    return { success: true, user: updatedUser };
+    return { success: true, user: authenticatedAppUser };
   };
 
-  const logout = () => {
-    setCurrentUser(null);
+  const logout = async () => {
     try {
-      localStorage.removeItem('univarsal_user_session');
-    } catch {
-      // ignore
+      await auth.signOut();
+    } catch (err) {
+      console.warn('Logout notice:', err);
     }
   };
 
@@ -449,10 +622,11 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   };
 
   const updateAppUser = (id: string, updates: Partial<AppUser>) => {
+    const { password: _p, ...safeUpdates } = updates;
     setAppUsers((prev) =>
       prev.map((u) => {
         if (u.id === id) {
-          const updated = { ...u, ...updates };
+          const updated: AppUser = { ...u, ...safeUpdates, password: '' };
           if (currentUser?.id === id) {
             setCurrentUser(updated);
             try {
@@ -471,22 +645,34 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     );
   };
 
+
   const deleteAppUser = (id: string) => {
     setAppUsers((prev) => prev.filter((u) => u.id !== id));
   };
 
   const updateSettings = (newSettings: Partial<AttendanceSettings>) => {
     setSettings((prev) => ({ ...prev, ...newSettings }));
+    attendanceSettingsDataService.updateAttendanceSettings(newSettings).catch((err) => {
+      console.warn('Supabase attendance settings update notice:', err);
+    });
   };
 
   const addSite = (site: Omit<Site, 'id'>) => {
     const newId = `S${String(sites.length + 1).padStart(3, '0')}`;
-    setSites((prev) => [...prev, { ...site, id: newId }]);
+    const siteObj: Site = { ...site, id: newId };
+    setSites((prev) => [...prev, siteObj]);
+    sitesDataService.createSite(siteObj).catch((err) => {
+      console.warn('Supabase site create notice:', err);
+    });
   };
 
   const addSection = (section: Omit<Section, 'id'>) => {
     const newId = `SEC${String(sections.length + 1).padStart(3, '0')}`;
-    setSections((prev) => [...prev, { ...section, id: newId }]);
+    const secObj: Section = { ...section, id: newId };
+    setSections((prev) => [...prev, secObj]);
+    sectionsDataService.createSection(secObj).catch((err) => {
+      console.warn('Supabase section create notice:', err);
+    });
   };
 
   const addWorker = (worker: Omit<Worker, 'id'> & { id?: string }): Worker => {
@@ -500,40 +686,49 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       purpose: worker.purpose || worker.designation || undefined,
     };
     setWorkers((prev) => [...prev, newWorker]);
+    workersDataService.createWorker(newWorker).catch((err) => {
+      console.warn('Supabase worker create notice:', err);
+    });
 
     const asgId = `ASG${String(assignments.length + 1 + Math.random()).substring(2, 6)}`;
-    setAssignments((prev) => [
-      ...prev,
-      {
-        id: asgId,
-        workerId: newId,
-        siteId: worker.currentSiteId,
-        sectionId: worker.currentSectionId,
-        fromDate: worker.joiningDate,
-        toDate: null,
-        reason: 'Initial onboard assignment',
-      },
-    ]);
+    const newAsg: WorkerAssignment = {
+      id: asgId,
+      workerId: newId,
+      siteId: worker.currentSiteId,
+      sectionId: worker.currentSectionId,
+      fromDate: worker.joiningDate,
+      toDate: null,
+      reason: 'Initial onboard assignment',
+    };
+    setAssignments((prev) => [...prev, newAsg]);
+    workerAssignmentsDataService.createWorkerAssignment(newAsg).catch((err) => {
+      console.warn('Supabase worker assignment create notice:', err);
+    });
 
-    setEmploymentHistory((prev) => [
-      ...prev,
-      {
-        id: `EMP${String(employmentHistory.length + 1 + Math.random()).substring(2, 6)}`,
-        workerId: newId,
-        date: worker.joiningDate,
-        event: 'joined',
-        siteId: worker.currentSiteId,
-        sectionId: worker.currentSectionId,
-        remarks: 'New employee onboarding to section',
-      },
-    ]);
+    const newEmpHist: EmploymentHistory = {
+      id: `EMP${String(employmentHistory.length + 1 + Math.random()).substring(2, 6)}`,
+      workerId: newId,
+      date: worker.joiningDate,
+      event: 'joined',
+      siteId: worker.currentSiteId,
+      sectionId: worker.currentSectionId,
+      remarks: 'New employee onboarding to section',
+    };
+    setEmploymentHistory((prev) => [...prev, newEmpHist]);
+    employmentHistoryDataService.createEmploymentHistory(newEmpHist).catch((err) => {
+      console.warn('Supabase employment history create notice:', err);
+    });
 
     return newWorker;
   };
 
   const addReferrer = (referrer: Omit<Referrer, 'id'>) => {
     const newId = `REF${String(referrers.length + 1).padStart(3, '0')}`;
-    setReferrers((prev) => [...prev, { ...referrer, id: newId }]);
+    const newRecord: Referrer = { ...referrer, id: newId };
+    setReferrers((prev) => [...prev, newRecord]);
+    referrersDataService.createReferrer(newRecord).catch((err) => {
+      console.warn('Supabase referrer create notice:', err);
+    });
   };
 
   const addAttendanceRecord = (record: Omit<Attendance, 'id'>) => {
@@ -572,6 +767,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
 
     setAttendance((prev) => [newRecord, ...prev]);
+    attendanceDataService.upsertAttendance(newRecord).catch((err) => {
+      console.warn('Supabase attendance create notice:', err);
+    });
 
     // Check if worker has active advances to auto-recover from daily wage
     const activeAdvance = advances.find(a => a.workerId === record.workerId && a.status === 'active');
@@ -597,10 +795,16 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             remarks: 'Auto-recovered from daily wage',
           };
 
-          setRecoveries(prev => [...prev, autoRecovery]);
+          setRecoveries((prev) => [...prev, autoRecovery]);
+          recoveriesDataService.createRecovery(autoRecovery).catch((err) => {
+            console.warn('Supabase auto recovery create notice:', err);
+          });
 
           if (outstanding - finalRecoveryAmt <= 0) {
-            setAdvances(prev => prev.map(a => a.id === activeAdvance.id ? { ...a, status: 'closed' } : a));
+            setAdvances((prev) => prev.map((a) => (a.id === activeAdvance.id ? { ...a, status: 'closed' } : a)));
+            advancesDataService.updateAdvance(activeAdvance.id, { status: 'closed' }).catch((err) => {
+              console.warn('Supabase advance close notice:', err);
+            });
           }
         }
       }
@@ -647,6 +851,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       };
 
       setAttendance((prev) => prev.map((a, i) => (i === existingIndex ? updated : a)));
+      attendanceDataService.upsertAttendance(updated).catch((err) => {
+        console.warn('Supabase attendance update notice:', err);
+      });
       return updated;
     } else {
       return addAttendanceRecord({
@@ -661,6 +868,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setAttendance((prev) => prev.filter((a) => a.id !== attendanceId));
     setAudits((prev) => prev.filter((aud) => aud.attendanceId !== attendanceId));
     setRecoveries((prev) => prev.filter((r) => r.attendanceId !== attendanceId));
+    attendanceDataService.deleteAttendance(attendanceId).catch((err) => {
+      console.warn('Supabase attendance delete notice:', err);
+    });
   };
 
   const updateAttendanceStatus = (
@@ -686,6 +896,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             reason,
           };
           setAudits((prevAudits) => [newAudit, ...prevAudits]);
+          attendanceAuditsDataService.createAttendanceAudit(newAudit).catch((err) => {
+            console.warn('Supabase attendance audit create notice:', err);
+          });
 
           let checkIn = item.checkIn;
           let checkOut = item.checkOut;
@@ -700,12 +913,16 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             checkOut = undefined;
           }
 
-          return {
+          const updatedItem = {
             ...item,
             status: newStatus,
             checkIn,
             checkOut,
           };
+          attendanceDataService.updateAttendance(item.id, { status: newStatus, checkIn, checkOut }).catch((err) => {
+            console.warn('Supabase attendance status update notice:', err);
+          });
+          return updatedItem;
         }
         return item;
       });
@@ -766,18 +983,25 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               reason: reasons[rec.workerId] || 'Manual bulk status update',
             };
             setAudits((prevAudits) => [newAudit, ...prevAudits]);
+            attendanceAuditsDataService.createAttendanceAudit(newAudit).catch((err) => {
+              console.warn('Supabase bulk audit create notice:', err);
+            });
 
-            updatedAttendance[existingIndex] = {
+            const updatedRec: Attendance = {
               ...oldRecord,
               status: rec.status,
               checkIn,
               checkOut,
             };
+            updatedAttendance[existingIndex] = updatedRec;
+            attendanceDataService.upsertAttendance(updatedRec).catch((err) => {
+              console.warn('Supabase bulk attendance update notice:', err);
+            });
           }
         } else {
           const newId = `ATT${String(updatedAttendance.length + 1).padStart(5, '0')}`;
           savedRecordId = newId;
-          updatedAttendance.push({
+          const newAttRec: Attendance = {
             id: newId,
             workerId: rec.workerId,
             assignmentId: workerAssignment.id,
@@ -786,6 +1010,10 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             method: 'manual',
             checkIn,
             checkOut,
+          };
+          updatedAttendance.push(newAttRec);
+          attendanceDataService.upsertAttendance(newAttRec).catch((err) => {
+            console.warn('Supabase bulk attendance insert notice:', err);
           });
         }
 
@@ -796,33 +1024,40 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             const dailyRecovery = calculateDailyRecovery(activeAdvance, rec.status, worker.dailyWage, settings);
             if (dailyRecovery > 0) {
               const advRecoveries = recoveries.filter(r => r.advanceId === activeAdvance.id);
-              const totalRecovered = advRecoveries.reduce((sum, r) => sum + r.amount, 0);
-              const outstanding = Math.max(0, activeAdvance.amount - totalRecovered);
+            const totalRecovered = roundMoney(advRecoveries.reduce((sum, r) => sum + r.amount, 0));
+            const outstanding = Math.max(0, subtractMoney(activeAdvance.amount, totalRecovered));
 
-              if (outstanding > 0) {
-                const finalRecoveryAmt = Math.min(dailyRecovery, outstanding);
-                const newRecId = `REC${String(recoveries.length + 1 + Math.random()).substring(2, 6)}`;
-                const autoRecovery: Recovery = {
-                  id: newRecId,
-                  advanceId: activeAdvance.id,
-                  workerId: rec.workerId,
-                  date,
-                  attendanceId: savedRecordId,
-                  amount: finalRecoveryAmt,
-                  method: activeAdvance.recoveryMethod,
-                  isManual: false,
-                  remarks: 'Auto-recovered from daily wage',
-                };
-                setRecoveries((prev) => [...prev, autoRecovery]);
+            if (outstanding > 0) {
+              const finalRecoveryAmt = roundMoney(Math.min(dailyRecovery, outstanding));
+              const newRecId = `REC${String(recoveries.length + 1 + Math.random()).substring(2, 6)}`;
+              const autoRecovery: Recovery = {
+                id: newRecId,
+                advanceId: activeAdvance.id,
+                workerId: rec.workerId,
+                date,
+                attendanceId: savedRecordId,
+                amount: finalRecoveryAmt,
+                method: activeAdvance.recoveryMethod,
+                isManual: false,
+                remarks: 'Auto-recovered from daily wage',
+              };
 
-                if (outstanding - finalRecoveryAmt <= 0) {
-                  setAdvances(prev => prev.map(a => a.id === activeAdvance.id ? { ...a, status: 'closed' } : a));
-                }
+              setRecoveries((prev) => [...prev, autoRecovery]);
+              recoveriesDataService.createRecovery(autoRecovery).catch((err) => {
+                console.warn('Supabase auto recovery create notice:', err);
+              });
+
+              if (outstanding - finalRecoveryAmt <= 0) {
+                setAdvances((prev) => prev.map((a) => (a.id === activeAdvance.id ? { ...a, status: 'closed' } : a)));
+                advancesDataService.updateAdvance(activeAdvance.id, { status: 'closed' }).catch((err) => {
+                  console.warn('Supabase advance close notice:', err);
+                });
               }
             }
           }
         }
-      });
+      }
+    });
 
       return updatedAttendance;
     });
@@ -830,12 +1065,31 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const addAdvance = (advance: Omit<Advance, 'id' | 'status'> & { status?: Advance['status'] }): Advance => {
     const newId = `ADV${String(advances.length + 1).padStart(3, '0')}`;
+    const roundedAmount = roundMoney(advance.amount);
     const newRecord: Advance = {
       ...advance,
       id: newId,
+      amount: roundedAmount,
+      dailyRecoveryAmount: advance.dailyRecoveryAmount !== undefined ? roundMoney(advance.dailyRecoveryAmount) : undefined,
+      fixedMonthlyAmount: advance.fixedMonthlyAmount !== undefined ? roundMoney(advance.fixedMonthlyAmount) : undefined,
       status: advance.status || 'pending',
     };
     setAdvances((prev) => [newRecord, ...prev]);
+    advancesDataService.createAdvance(newRecord).catch((err) => {
+      console.warn('Supabase advance create notice:', err);
+    });
+
+    // Create ledger entry
+    ledgerDataService.createLedgerEntry({
+      id: `LED${String(Date.now()).slice(-6)}`,
+      workerId: newRecord.workerId,
+      date: newRecord.date,
+      type: 'advance',
+      amount: roundedAmount,
+      runningBalance: roundedAmount,
+      remarks: `Advance given: ${newRecord.reason}`,
+    }).catch(() => {});
+
     return newRecord;
   };
 
@@ -863,6 +1117,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         if (details?.remarks) {
           updates.financeRemarks = details.remarks;
         }
+        advancesDataService.updateAdvance(advanceId, updates).catch((err) => {
+          console.warn('Supabase advance status update notice:', err);
+        });
         return { ...adv, ...updates };
       })
     );
@@ -870,20 +1127,37 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const addManualRecovery = (recovery: Omit<Recovery, 'id' | 'isManual' | 'method'>) => {
     const newId = `REC${String(recoveries.length + 1).padStart(4, '0')}`;
+    const roundedAmount = roundMoney(recovery.amount);
     const newRecord: Recovery = {
       ...recovery,
       id: newId,
+      amount: roundedAmount,
       isManual: true,
       method: 'manual',
     };
     setRecoveries((prev) => [...prev, newRecord]);
+    recoveriesDataService.createRecovery(newRecord).catch((err) => {
+      console.warn('Supabase manual recovery create notice:', err);
+    });
+
+    // Create ledger entry
+    ledgerDataService.createLedgerEntry({
+      id: `LED${String(Date.now()).slice(-6)}`,
+      workerId: newRecord.workerId,
+      date: newRecord.date,
+      type: 'recovery',
+      amount: roundedAmount,
+      runningBalance: 0,
+      remarks: `Manual recovery for advance ${newRecord.advanceId}`,
+    }).catch(() => {});
 
     setAdvances((prevAdvances) => {
       return prevAdvances.map((adv) => {
         if (adv.id === recovery.advanceId) {
           const currentRecoveries = [...recoveries, newRecord].filter((r) => r.advanceId === adv.id);
-          const totalRecovered = currentRecoveries.reduce((sum, r) => sum + r.amount, 0);
+          const totalRecovered = roundMoney(currentRecoveries.reduce((sum, r) => addMoney(sum, r.amount), 0));
           if (totalRecovered >= adv.amount) {
+            advancesDataService.updateAdvance(adv.id, { status: 'closed' }).catch(() => {});
             return {
               ...adv,
               status: 'closed',
@@ -899,12 +1173,16 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setAdvances((prev) =>
       prev.map((adv) => {
         if (adv.id === advanceId) {
+          const updatedRemarks = remarks
+            ? `${adv.remarks || ''}; ${remarks}`.trim().replace(/^; /, '')
+            : adv.remarks;
+          advancesDataService.updateAdvance(advanceId, { status: 'closed', remarks: updatedRemarks }).catch((err) => {
+            console.warn('Supabase close advance notice:', err);
+          });
           return {
             ...adv,
             status: 'closed',
-            remarks: remarks
-              ? `${adv.remarks || ''}; ${remarks}`.trim().replace(/^; /, '')
-              : adv.remarks,
+            remarks: updatedRemarks,
           };
         }
         return adv;
@@ -914,6 +1192,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const updateSite = (site: Site) => {
     setSites((prev) => prev.map((s) => (s.id === site.id ? site : s)));
+    sitesDataService.updateSite(site.id, site).catch((err) => {
+      console.warn('Supabase site update notice:', err);
+    });
   };
 
   const deleteSite = (siteId: string) => {
@@ -921,27 +1202,48 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setSections((prev) => prev.filter((sec) => sec.siteId !== siteId));
     setWorkers((prev) => prev.filter((w) => w.currentSiteId !== siteId));
     setAppUsers((prev) => prev.filter((u) => u.assignedSiteId !== siteId));
+    sitesDataService.deleteSite(siteId).catch((err) => {
+      console.warn('Supabase site delete notice:', err);
+    });
   };
 
   const toggleSiteStatus = (siteId: string) => {
+    const target = sites.find((s) => s.id === siteId);
+    if (!target) return;
+    const newStatus: Site['status'] = target.status === 'active' ? 'inactive' : 'active';
     setSites((prev) =>
-      prev.map((s) => (s.id === siteId ? { ...s, status: s.status === 'active' ? 'inactive' : 'active' } : s))
+      prev.map((s) => (s.id === siteId ? { ...s, status: newStatus } : s))
     );
+    sitesDataService.updateSite(siteId, { status: newStatus }).catch((err) => {
+      console.warn('Supabase site status update notice:', err);
+    });
   };
 
   const updateSection = (section: Section) => {
     setSections((prev) => prev.map((sec) => (sec.id === section.id ? section : sec)));
+    sectionsDataService.updateSection(section.id, section).catch((err) => {
+      console.warn('Supabase section update notice:', err);
+    });
   };
 
   const deleteSection = (sectionId: string) => {
     setSections((prev) => prev.filter((sec) => sec.id !== sectionId));
     setWorkers((prev) => prev.filter((w) => w.currentSectionId !== sectionId));
+    sectionsDataService.deleteSection(sectionId).catch((err) => {
+      console.warn('Supabase section delete notice:', err);
+    });
   };
 
   const toggleSectionStatus = (sectionId: string) => {
+    const target = sections.find((sec) => sec.id === sectionId);
+    if (!target) return;
+    const newStatus: Section['status'] = target.status === 'active' ? 'inactive' : 'active';
     setSections((prev) =>
-      prev.map((sec) => (sec.id === sectionId ? { ...sec, status: sec.status === 'active' ? 'inactive' : 'active' } : sec))
+      prev.map((sec) => (sec.id === sectionId ? { ...sec, status: newStatus } : sec))
     );
+    sectionsDataService.updateSection(sectionId, { status: newStatus }).catch((err) => {
+      console.warn('Supabase section status update notice:', err);
+    });
   };
 
   const updateWorker = (updatedWorker: Worker) => {
@@ -952,6 +1254,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
 
     setWorkers((prev) => prev.map((w) => (w.id === finalWorker.id ? finalWorker : w)));
+    workersDataService.updateWorker(finalWorker.id, finalWorker).catch((err) => {
+      console.warn('Supabase worker update notice:', err);
+    });
 
     // Synchronize assignment if site or section changed or if no active assignment exists
     const todayStr = new Date().toISOString().split('T')[0];
@@ -982,6 +1287,8 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             status: 'active',
             reason: 'Site/Section updated in worker profile',
           };
+          workerAssignmentsDataService.updateWorkerAssignment(closed.id, closed).catch(() => {});
+          workerAssignmentsDataService.createWorkerAssignment(newAsg).catch(() => {});
           const updatedList = [...prev];
           updatedList[activeAsgIndex] = closed;
           updatedList.push(newAsg);
@@ -999,6 +1306,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           status: 'active',
           reason: 'Auto-linked active assignment',
         };
+        workerAssignmentsDataService.createWorkerAssignment(newAsg).catch(() => {});
         return [...prev, newAsg];
       }
     });
@@ -1011,6 +1319,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setRecoveries((prev) => prev.filter((r) => r.workerId !== workerId));
     setAssignments((prev) => prev.filter((asg) => asg.workerId !== workerId));
     setPayments((prev) => prev.filter((p) => p.workerId !== workerId));
+    workersDataService.deleteWorker(workerId).catch((err) => {
+      console.warn('Supabase worker delete notice:', err);
+    });
   };
 
   const updateWorkerOpening = (workerId: string, opening: WorkerOpeningRecord) => {
@@ -1026,11 +1337,19 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return w;
       })
     );
+    workerOpeningRecordsDataService.upsertWorkerOpeningRecord(opening).catch((err) => {
+      console.warn('Supabase worker opening upsert notice:', err);
+    });
   };
 
   const bulkUpdateWorkerOpenings = (openings: WorkerOpeningRecord[]) => {
     const openingMap = new Map<string, WorkerOpeningRecord>();
-    openings.forEach((o) => openingMap.set(o.workerId, o));
+    openings.forEach((o) => {
+      openingMap.set(o.workerId, o);
+      workerOpeningRecordsDataService.upsertWorkerOpeningRecord(o).catch((err) => {
+        console.warn('Supabase bulk opening upsert notice:', err);
+      });
+    });
 
     setWorkers((prev) =>
       prev.map((w) => {
@@ -1059,12 +1378,14 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setAssignments((prev) =>
       prev.map((asg) => {
         if (asg.workerId === workerId && asg.toDate === null) {
-          return {
+          const closed = {
             ...asg,
             toDate: date,
-            status: 'closed',
+            status: 'closed' as const,
             reason: reason || 'Transferred',
           };
+          workerAssignmentsDataService.updateWorkerAssignment(asg.id, closed).catch(() => {});
+          return closed;
         }
         return asg;
       })
@@ -1072,33 +1393,39 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     // 2. Open new assignment
     const asgId = `ASG${String(assignments.length + 1 + Math.random()).substring(2, 6)}`;
-    setAssignments((prev) => [
-      ...prev,
-      {
-        id: asgId,
-        workerId,
-        siteId: toSiteId,
-        sectionId: toSectionId,
-        fromDate: date,
-        toDate: null,
-        status: 'active',
-        reason: reason || 'Transfer',
-        remarks,
-      },
-    ]);
+    const newAsg: WorkerAssignment = {
+      id: asgId,
+      workerId,
+      siteId: toSiteId,
+      sectionId: toSectionId,
+      fromDate: date,
+      toDate: null,
+      status: 'active',
+      reason: reason || 'Transfer',
+      remarks,
+    };
+    setAssignments((prev) => [...prev, newAsg]);
+    workerAssignmentsDataService.createWorkerAssignment(newAsg).catch(() => {});
 
     // 3. Update worker's current assignment pointers
     setWorkers((prev) =>
-      prev.map((w) =>
-        w.id === workerId
-          ? {
-              ...w,
-              currentSiteId: toSiteId,
-              currentSectionId: toSectionId,
-              remarks: remarks ? `${w.remarks || ''}; ${remarks}`.trim().replace(/^; /, '') : w.remarks,
-            }
-          : w
-      )
+      prev.map((w) => {
+        if (w.id === workerId) {
+          const updated = {
+            ...w,
+            currentSiteId: toSiteId,
+            currentSectionId: toSectionId,
+            remarks: remarks ? `${w.remarks || ''}; ${remarks}`.trim().replace(/^; /, '') : w.remarks,
+          };
+          workersDataService.updateWorker(workerId, {
+            currentSiteId: toSiteId,
+            currentSectionId: toSectionId,
+            remarks: updated.remarks,
+          }).catch(() => {});
+          return updated;
+        }
+        return w;
+      })
     );
   };
 
@@ -1120,6 +1447,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       createdAt: timestamp,
     };
     setSiteMigrations((prev) => [newRecord, ...prev]);
+    siteMigrationsDataService.createSiteMigration(newRecord).catch((err) => {
+      console.warn('Supabase site migration create notice:', err);
+    });
 
     // Apply movement to worker and assignments
     transferWorker(
@@ -1136,6 +1466,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const deleteSiteMigration = (id: string) => {
     setSiteMigrations((prev) => prev.filter((m) => m.id !== id));
+    siteMigrationsDataService.deleteSiteMigration(id).catch((err) => {
+      console.warn('Supabase site migration delete notice:', err);
+    });
   };
 
   const markWorkerLeft = (workerId: string, date: string, remarks?: string) => {
@@ -1148,7 +1481,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         if (w.id === workerId) {
           targetSite = w.currentSiteId;
           targetSection = w.currentSectionId;
-          return { ...w, status: 'left', remarks: remarks || w.remarks };
+          const updated = { ...w, status: 'left' as const, remarks: remarks || w.remarks };
+          workersDataService.updateWorker(workerId, { status: 'left', remarks: updated.remarks }).catch(() => {});
+          return updated;
         }
         return w;
       })
@@ -1158,7 +1493,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setAssignments((prev) =>
       prev.map((asg) => {
         if (asg.workerId === workerId && asg.toDate === null) {
-          return { ...asg, toDate: date, status: 'closed', reason: 'Worker left employment' };
+          const closed = { ...asg, toDate: date, status: 'closed' as const, reason: 'Worker left employment' };
+          workerAssignmentsDataService.updateWorkerAssignment(asg.id, closed).catch(() => {});
+          return closed;
         }
         return asg;
       })
@@ -1166,18 +1503,19 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     // 3. Append to employment history
     const ehId = `EH${String(employmentHistory.length + 1).padStart(3, '0')}`;
-    setEmploymentHistory((prev) => [
-      ...prev,
-      {
-        id: ehId,
-        workerId,
-        date,
-        event: 'left',
-        siteId: targetSite,
-        sectionId: targetSection,
-        remarks: remarks || 'Worker departed / marked as left',
-      },
-    ]);
+    const newEmpHist: EmploymentHistory = {
+      id: ehId,
+      workerId,
+      date,
+      event: 'left',
+      siteId: targetSite,
+      sectionId: targetSection,
+      remarks: remarks || 'Worker departed / marked as left',
+    };
+    setEmploymentHistory((prev) => [...prev, newEmpHist]);
+    employmentHistoryDataService.createEmploymentHistory(newEmpHist).catch((err) => {
+      console.warn('Supabase employment history create notice:', err);
+    });
   };
 
   const rejoinWorker = (
@@ -1189,51 +1527,60 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   ) => {
     // 1. Reactivate worker with same permanent ID!
     setWorkers((prev) =>
-      prev.map((w) =>
-        w.id === workerId
-          ? {
-              ...w,
-              status: 'active',
-              currentSiteId: toSiteId,
-              currentSectionId: toSectionId,
-              lastRejoinedDate: date,
-              remarks: remarks ? `${w.remarks || ''}; ${remarks}`.trim().replace(/^; /, '') : w.remarks,
-            }
-          : w
-      )
+      prev.map((w) => {
+        if (w.id === workerId) {
+          const updated = {
+            ...w,
+            status: 'active' as const,
+            currentSiteId: toSiteId,
+            currentSectionId: toSectionId,
+            lastRejoinedDate: date,
+            remarks: remarks ? `${w.remarks || ''}; ${remarks}`.trim().replace(/^; /, '') : w.remarks,
+          };
+          workersDataService.updateWorker(workerId, {
+            status: 'active',
+            currentSiteId: toSiteId,
+            currentSectionId: toSectionId,
+            lastRejoinedDate: date,
+            remarks: updated.remarks,
+          }).catch(() => {});
+          return updated;
+        }
+        return w;
+      })
     );
 
     // 2. Open new assignment
     const asgId = `ASG${String(assignments.length + 1 + Math.random()).substring(2, 6)}`;
-    setAssignments((prev) => [
-      ...prev,
-      {
-        id: asgId,
-        workerId,
-        siteId: toSiteId,
-        sectionId: toSectionId,
-        fromDate: date,
-        toDate: null,
-        status: 'active',
-        reason: 'Worker Rejoined',
-        remarks,
-      },
-    ]);
+    const newAsg: WorkerAssignment = {
+      id: asgId,
+      workerId,
+      siteId: toSiteId,
+      sectionId: toSectionId,
+      fromDate: date,
+      toDate: null,
+      status: 'active',
+      reason: 'Worker rejoined employment',
+      remarks,
+    };
+    setAssignments((prev) => [...prev, newAsg]);
+    workerAssignmentsDataService.createWorkerAssignment(newAsg).catch(() => {});
 
-    // 3. Log event in employment history
+    // 3. Append to employment history
     const ehId = `EH${String(employmentHistory.length + 1).padStart(3, '0')}`;
-    setEmploymentHistory((prev) => [
-      ...prev,
-      {
-        id: ehId,
-        workerId,
-        date,
-        event: 'rejoined',
-        siteId: toSiteId,
-        sectionId: toSectionId,
-        remarks: remarks || 'Rejoined workforce with permanent ID',
-      },
-    ]);
+    const newEmpHist: EmploymentHistory = {
+      id: ehId,
+      workerId,
+      date,
+      event: 'rejoined',
+      siteId: toSiteId,
+      sectionId: toSectionId,
+      remarks: remarks || 'Worker rejoined workforce',
+    };
+    setEmploymentHistory((prev) => [...prev, newEmpHist]);
+    employmentHistoryDataService.createEmploymentHistory(newEmpHist).catch((err) => {
+      console.warn('Supabase employment history create notice:', err);
+    });
   };
 
   const markPaymentPaid = (paymentId: string) => {
@@ -1247,6 +1594,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setPayments((prev) =>
       prev.map((p) => (p.id === paymentId ? { ...p, status: 'paid', paidAt: p.paidAt || timestamp } : p))
     );
+    workerPaymentsDataService.updateWorkerPayment(paymentId, { status: 'paid', paidAt: timestamp }).catch((err) => {
+      console.warn('Supabase worker payment update notice:', err);
+    });
   };
 
   const updatePaymentStatus = (paymentId: string, status: WorkerPayment['status']) => {
@@ -1266,6 +1616,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         } else if (status === 'paid') {
           updates.paidAt = p.paidAt || timestamp;
         }
+        workerPaymentsDataService.updateWorkerPayment(paymentId, updates).catch((err) => {
+          console.warn('Supabase worker payment update notice:', err);
+        });
         return { ...p, ...updates };
       })
     );
@@ -1275,6 +1628,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setSettlementRecords((prev) =>
       prev.map((s) => (s.id === settlementId ? { ...s, status } : s))
     );
+    monthlySettlementsDataService.updateMonthlySettlement(settlementId, { status }).catch((err) => {
+      console.warn('Supabase monthly settlement update notice:', err);
+    });
   };
 
   // Section Food Orders & Canteen Pipeline Methods
@@ -1326,6 +1682,11 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       };
       setFoodOrders((prev) => [finalOrder, ...prev]);
     }
+
+    sectionFoodOrdersDataService.upsertSectionFoodOrder(finalOrder).catch((err) => {
+      console.warn('Supabase section food order upsert notice:', err);
+    });
+
     return finalOrder;
   };
 
@@ -1340,13 +1701,22 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setFoodOrders((prev) =>
       prev.map((o) => {
         if (o.id !== orderId) return o;
-        return {
+        const updated: SectionFoodOrder = {
           ...o,
           status: 'pushed_to_canteen',
           pushedAt: o.pushedAt || timestamp,
           pushedBy: o.pushedBy || currentUser?.name || 'Section Supervisor',
           remarks: remarks !== undefined ? remarks : o.remarks,
         };
+        sectionFoodOrdersDataService.updateSectionFoodOrder(orderId, {
+          status: updated.status,
+          pushedAt: updated.pushedAt,
+          pushedBy: updated.pushedBy,
+          remarks: updated.remarks,
+        }).catch((err) => {
+          console.warn('Supabase push food order notice:', err);
+        });
+        return updated;
       })
     );
   };
@@ -1381,6 +1751,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           updates.dispatchedAt = o.dispatchedAt || timestamp;
           updates.dispatchedQty = details?.dispatchedQty ?? o.totalOrderedQty;
         }
+        sectionFoodOrdersDataService.updateSectionFoodOrder(orderId, updates).catch((err) => {
+          console.warn('Supabase update canteen status notice:', err);
+        });
         return { ...o, ...updates };
       })
     );
@@ -1402,7 +1775,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setFoodOrders((prev) =>
       prev.map((o) => {
         if (o.id !== orderId) return o;
-        return {
+        const updated: SectionFoodOrder = {
           ...o,
           status: 'received',
           receivedQty,
@@ -1410,6 +1783,16 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           receivedBy: receivedBy || currentUser?.name || 'Section Supervisor',
           receivingRemarks: remarks !== undefined ? remarks : o.receivingRemarks,
         };
+        sectionFoodOrdersDataService.updateSectionFoodOrder(orderId, {
+          status: updated.status,
+          receivedQty: updated.receivedQty,
+          receivedAt: updated.receivedAt,
+          receivedBy: updated.receivedBy,
+          receivingRemarks: updated.receivingRemarks,
+        }).catch((err) => {
+          console.warn('Supabase receive food order notice:', err);
+        });
+        return updated;
       })
     );
   };
@@ -1431,7 +1814,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setFoodOrders((prev) =>
       prev.map((o) => {
         if (o.id !== orderId) return o;
-        return {
+        const updated: SectionFoodOrder = {
           ...o,
           status: 'shortage_resend_requested',
           receivedQty,
@@ -1441,6 +1824,18 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           receivedBy: supervisorName || currentUser?.name || 'Section Supervisor',
           receivingRemarks: `Initial received: ${receivedQty} meals. Shortage of ${shortageQty} reported (${shortageReason}). Requested Canteen to re-send remaining parcels.`,
         };
+        sectionFoodOrdersDataService.updateSectionFoodOrder(orderId, {
+          status: updated.status,
+          receivedQty: updated.receivedQty,
+          shortageQty: updated.shortageQty,
+          shortageReason: updated.shortageReason,
+          reSendRequestedAt: updated.reSendRequestedAt,
+          receivedBy: updated.receivedBy,
+          receivingRemarks: updated.receivingRemarks,
+        }).catch((err) => {
+          console.warn('Supabase request shortage resend notice:', err);
+        });
+        return updated;
       })
     );
   };
@@ -1460,12 +1855,20 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setFoodOrders((prev) =>
       prev.map((o) => {
         if (o.id !== orderId) return o;
-        return {
+        const updated: SectionFoodOrder = {
           ...o,
           status: 'remaining_sent',
           reSendDispatchedAt: timestamp,
           canteenRemarks: `Remaining ${dispatchedQty} parcels packed & dispatched at ${timestamp} via ${driverInfo || 'Canteen Express'}.`,
         };
+        sectionFoodOrdersDataService.updateSectionFoodOrder(orderId, {
+          status: updated.status,
+          reSendDispatchedAt: updated.reSendDispatchedAt,
+          canteenRemarks: updated.canteenRemarks,
+        }).catch((err) => {
+          console.warn('Supabase dispatch remaining parcels notice:', err);
+        });
+        return updated;
       })
     );
   };
@@ -1486,7 +1889,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       prev.map((o) => {
         if (o.id !== orderId) return o;
         const totalFinalReceived = (o.receivedQty || 0) + receivedRemainingQty;
-        return {
+        const updated: SectionFoodOrder = {
           ...o,
           status: 'received',
           remainingReceivedQty: receivedRemainingQty,
@@ -1495,6 +1898,17 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           receivedBy: supervisorName || currentUser?.name || 'Section Supervisor',
           receivingRemarks: `Full order fulfilled: ${o.receivedQty} initial + ${receivedRemainingQty} remaining parcels verified and received at ${timestamp}.`,
         };
+        sectionFoodOrdersDataService.updateSectionFoodOrder(orderId, {
+          status: updated.status,
+          remainingReceivedQty: updated.remainingReceivedQty,
+          receivedQty: updated.receivedQty,
+          reSendReceivedAt: updated.reSendReceivedAt,
+          receivedBy: updated.receivedBy,
+          receivingRemarks: updated.receivingRemarks,
+        }).catch((err) => {
+          console.warn('Supabase confirm remaining parcels notice:', err);
+        });
+        return updated;
       })
     );
   };
@@ -1513,10 +1927,14 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const newRecord: CommissionPaymentRequest = {
       ...req,
       id: newId,
+      amount: roundMoney(req.amount),
       status: req.status || 'pending',
       requestedAt: timestamp,
     };
     setCommissionRequests((prev) => [newRecord, ...prev]);
+    commissionPaymentRequestsDataService.createCommissionPaymentRequest(newRecord).catch((err) => {
+      console.warn('Supabase commission request create notice:', err);
+    });
     return newRecord;
   };
 
@@ -1539,11 +1957,15 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return {
           ...req,
           id: newId,
+          amount: roundMoney(req.amount),
           status: req.status || 'pending',
           requestedAt: timestamp,
         };
       });
       created.push(...newItems);
+      commissionPaymentRequestsDataService.createBulkCommissionPaymentRequests(newItems).catch((err) => {
+        console.warn('Supabase bulk commission requests create notice:', err);
+      });
       return [...newItems, ...prev];
     });
     return created;
@@ -1570,6 +1992,9 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         };
         if (status === 'processing') updates.processedAt = timestamp;
         if (status === 'paid') updates.paidAt = timestamp;
+        commissionPaymentRequestsDataService.updateCommissionPaymentRequest(id, updates).catch((err) => {
+          console.warn('Supabase update commission request status notice:', err);
+        });
         return { ...r, ...updates };
       })
     );
@@ -1592,6 +2017,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         payments,
         settlementRecords,
         currentUser,
+        setCurrentUser,
         appUsers,
         switchUser,
         loginWithCredentials,
@@ -1645,6 +2071,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         addSiteMigration,
         deleteSiteMigration,
         resetToDefaultData,
+        realtimeStatus,
       }}
     >
       {children}

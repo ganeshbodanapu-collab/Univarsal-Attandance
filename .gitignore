@@ -30,3 +30,16 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# Android & Capacitor
+android/app/build/
+android/build/
+android/local.properties
+android/.gradle/
+android/captures/
+*.keystore
+*.jks
+*.p12
+*.apk
+*.aab
+

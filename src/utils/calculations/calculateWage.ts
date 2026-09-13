@@ -1,5 +1,6 @@
 import type { AttendanceSettings } from '../../types';
 import { defaultSettings } from './calculateFood';
+import { multiplyMoney } from '../money';
 
 export function calculateDailyWage(
   status: 'present' | 'halfDay' | 'absent' | 'leave' | 'holiday' | string,
@@ -8,10 +9,11 @@ export function calculateDailyWage(
 ): number {
   switch (status) {
     case 'present':
-      return dailyWage * settings.wagePresentMultiplier;
+      return multiplyMoney(dailyWage, settings.wagePresentMultiplier);
     case 'halfDay':
-      return dailyWage * settings.wageHalfDayMultiplier;
+      return multiplyMoney(dailyWage, settings.wageHalfDayMultiplier);
     default:
-      return dailyWage * settings.wageAbsentMultiplier;
+      return multiplyMoney(dailyWage, settings.wageAbsentMultiplier);
   }
 }
+

@@ -1,5 +1,6 @@
 import type { AttendanceSettings } from '../../types';
 import { defaultSettings } from './calculateFood';
+import { multiplyMoney } from '../money';
 
 export function calculateCommission(
   status: 'present' | 'halfDay' | 'absent' | 'leave' | 'holiday' | string,
@@ -8,10 +9,11 @@ export function calculateCommission(
 ): number {
   switch (status) {
     case 'present':
-      return commissionRate * settings.commissionPresentMultiplier;
+      return multiplyMoney(commissionRate, settings.commissionPresentMultiplier);
     case 'halfDay':
-      return commissionRate * settings.commissionHalfDayMultiplier;
+      return multiplyMoney(commissionRate, settings.commissionHalfDayMultiplier);
     default:
-      return commissionRate * settings.commissionAbsentMultiplier;
+      return multiplyMoney(commissionRate, settings.commissionAbsentMultiplier);
   }
 }
+

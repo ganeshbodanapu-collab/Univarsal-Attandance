@@ -9,9 +9,8 @@ import { StatusBadge } from '../../components/common/StatusBadge';
 import {
   Shield,
   KeyRound,
-  Eye,
-  EyeOff,
   Copy,
+
   Check,
   Plus,
   Lock,
@@ -24,6 +23,7 @@ import {
   Search,
 } from 'lucide-react';
 import type { AppUser } from '../../types';
+import { authService } from '../../lib/auth';
 
 export const SiteUsers: React.FC = () => {
   const {
@@ -40,12 +40,11 @@ export const SiteUsers: React.FC = () => {
   const [filterSiteId, setFilterSiteId] = useState('all');
   const [filterRole, setFilterRole] = useState('all');
 
-  // Password visibility state map
-  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
   // Copied feedback key
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Toast feedback
+
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Modal states
@@ -72,10 +71,7 @@ export const SiteUsers: React.FC = () => {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  // Toggle password visibility
-  const toggleVisibility = (userId: string) => {
-    setVisiblePasswords((prev) => ({ ...prev, [userId]: !prev[userId] }));
-  };
+
 
   // Copy to clipboard
   const handleCopy = (text: string, key: string) => {
@@ -109,7 +105,7 @@ export const SiteUsers: React.FC = () => {
   };
 
   // Handle Create User Submit
-  const handleCreateSubmit = (e: React.FormEvent) => {
+  const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!createUsername.trim() || !createPassword.trim() || !createName.trim()) {
       alert('Please fill in all required fields: Name, User ID, and Password.');
@@ -125,7 +121,7 @@ export const SiteUsers: React.FC = () => {
       return;
     }
 
-    addAppUser({
+    const res = await authService.adminCreateUser({
       username: createUsername.trim().toLowerCase(),
       password: createPassword.trim(),
       name: createName.trim(),
@@ -133,11 +129,28 @@ export const SiteUsers: React.FC = () => {
       assignedSiteId: createRole === 'supervisor' ? createSiteId : undefined,
       mobile: createMobile.trim(),
       email: createEmail.trim(),
-      status: 'active',
     });
 
+    if (!res.success) {
+      alert(`Failed to create site user: ${res.error}`);
+      return;
+    }
+
+    if (res.appUser) {
+      addAppUser({
+        username: res.appUser.username,
+        password: '',
+        name: res.appUser.name,
+        role: res.appUser.role,
+        assignedSiteId: res.appUser.assigned_site_id || undefined,
+        mobile: res.appUser.mobile || undefined,
+        email: res.appUser.email || undefined,
+        status: 'active',
+      });
+    }
+
     setShowCreateModal(false);
-    setToastMessage(`Site user account "${createUsername}" created successfully!`);
+    setToastMessage(`Site user account "${createUsername}" created successfully in Supabase Auth!`);
     setCreateUsername('');
     setCreatePassword('');
     setCreateName('');
@@ -147,23 +160,34 @@ export const SiteUsers: React.FC = () => {
   };
 
   // Handle Reset Password Submit
-  const handleResetSubmit = (e: React.FormEvent) => {
+  const handleResetSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedUserForReset || !newPasswordInput.trim()) return;
 
-    updateAppUser(selectedUserForReset.id, { password: newPasswordInput.trim() });
+    const res = await authService.adminChangeUserPassword(
+      selectedUserForReset.username,
+      newPasswordInput.trim()
+    );
+
+    if (!res.success) {
+      alert(`Password update failed: ${res.error}`);
+      return;
+    }
+
+    updateAppUser(selectedUserForReset.id, {});
     setShowResetModal(false);
-    setToastMessage(`Password for ${selectedUserForReset.name} updated successfully!`);
+    setToastMessage(`Password for ${selectedUserForReset.name} updated successfully in Supabase Auth!`);
     setSelectedUserForReset(null);
     setNewPasswordInput('');
   };
 
+
   // Handle Login Submit
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
 
-    const result = loginWithCredentials(loginUsername, loginPassword);
+    const result = await loginWithCredentials(loginUsername, loginPassword);
     if (result.success && result.user) {
       setShowLoginModal(false);
       setToastMessage(`Authenticated as ${result.user.name} (${result.user.role === 'admin' ? 'Universal Admin' : 'Site Supervisor'})!`);
@@ -173,6 +197,7 @@ export const SiteUsers: React.FC = () => {
       setLoginError(result.message || 'Login failed. Please check credentials.');
     }
   };
+
 
   // Filtered Users
   const filteredUsers = appUsers.filter((u) => {
@@ -362,8 +387,8 @@ export const SiteUsers: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {filteredUsers.map((user) => {
           const site = sites.find((s) => s.id === user.assignedSiteId);
-          const isVisible = !!visiblePasswords[user.id];
           const isCurrentSession = currentUser?.id === user.id;
+
 
           return (
             <div
@@ -438,43 +463,18 @@ export const SiteUsers: React.FC = () => {
                   </button>
                 </div>
 
-                {/* Password Field with Mask & Reveal */}
+                {/* Password Field */}
                 <div className="flex items-center justify-between pt-0.5">
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Password
+                      Password Authority
                     </span>
-                    <span className="font-mono text-xs font-black tracking-wider text-amber-300 select-all">
-                      {isVisible ? user.password : '••••••••••••'}
+                    <span className="font-mono text-xs font-bold text-emerald-400">
+                      Supabase Auth Encrypted
                     </span>
-                  </div>
-
-                  <div className="flex items-center space-x-1.5">
-                    <button
-                      onClick={() => toggleVisibility(user.id)}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                      title={isVisible ? 'Hide Password' : 'Show Password'}
-                    >
-                      {isVisible ? (
-                        <EyeOff className="h-3.5 w-3.5 text-slate-400" />
-                      ) : (
-                        <Eye className="h-3.5 w-3.5" />
-                      )}
-                    </button>
-
-                    <button
-                      onClick={() => handleCopy(user.password, `pwd_${user.id}`)}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                      title="Copy Password"
-                    >
-                      {copiedKey === `pwd_${user.id}` ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-400" />
-                      ) : (
-                        <Copy className="h-3.5 w-3.5" />
-                      )}
-                    </button>
                   </div>
                 </div>
+
               </div>
 
               {/* Extra Info: Mobile & Last Login */}
@@ -799,7 +799,7 @@ export const SiteUsers: React.FC = () => {
                       <th className="p-2.5 font-bold">Site / Scope</th>
                       <th className="p-2.5 font-bold">Supervisor Name</th>
                       <th className="p-2.5 font-bold">User ID (Login)</th>
-                      <th className="p-2.5 font-bold">Default Password</th>
+                      <th className="p-2.5 font-bold">Security Status</th>
                       <th className="p-2.5 font-bold">Mobile</th>
                     </tr>
                   </thead>
@@ -815,9 +815,10 @@ export const SiteUsers: React.FC = () => {
                           <td className="p-2.5 font-mono font-bold text-blue-700 bg-blue-50/50">
                             {u.username}
                           </td>
-                          <td className="p-2.5 font-mono font-bold text-amber-700 bg-amber-50/50">
-                            {u.password}
+                          <td className="p-2.5 font-mono font-bold text-emerald-700 bg-emerald-50/50">
+                            Supabase Auth Managed
                           </td>
+
                           <td className="p-2.5 text-slate-600">{u.mobile || '-'}</td>
                         </tr>
                       );

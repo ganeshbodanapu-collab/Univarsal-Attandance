@@ -22,8 +22,8 @@ import {
   Plus,
   ArrowRight,
   Eye,
-  EyeOff,
   Copy,
+
   Check,
   LogIn,
   KeyRound,
@@ -56,8 +56,8 @@ export const SiteDetails: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState('overview');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [sitePwdVisible, setSitePwdVisible] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
   const [showNewEmployeeModal, setShowNewEmployeeModal] = useState(false);
   const [showDeleteSiteConfirm, setShowDeleteSiteConfirm] = useState(false);
   const [sectionToDelete, setSectionToDelete] = useState<any | null>(null);
@@ -506,34 +506,14 @@ export const SiteDetails: React.FC = () => {
                 <div className="bg-slate-800/80 rounded-2xl p-4 border border-slate-700/60 flex items-center justify-between">
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                      Site Password
+                      Password Security Authority
                     </span>
-                    <span className="font-mono text-xs font-black tracking-wider text-amber-300 select-all">
-                      {sitePwdVisible ? assignedUser.password : '••••••••••••'}
+                    <span className="font-mono text-xs font-bold text-emerald-400">
+                      Supabase Auth Encrypted
                     </span>
-                  </div>
-                  <div className="flex items-center space-x-1.5">
-                    <button
-                      onClick={() => setSitePwdVisible(!sitePwdVisible)}
-                      className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                      title={sitePwdVisible ? 'Hide Password' : 'Show Password'}
-                    >
-                      {sitePwdVisible ? <EyeOff className="h-3.5 w-3.5 text-slate-400" /> : <Eye className="h-3.5 w-3.5" />}
-                    </button>
-                    <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(assignedUser.password);
-                        setCopiedKey('pwd');
-                        setToastMessage('Copied password to clipboard!');
-                        setTimeout(() => setCopiedKey(null), 2000);
-                      }}
-                      className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                      title="Copy Password"
-                    >
-                      {copiedKey === 'pwd' ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-                    </button>
                   </div>
                 </div>
+
               </div>
             ) : (
               <div className="p-4 bg-slate-800/50 rounded-2xl text-xs text-slate-400 flex items-center justify-between">

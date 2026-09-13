@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Universal Attendance</string>
+    <string name="title_activity_main">Universal Attendance</string>
+    <string name="package_name">com.universalaquasolutions.attendance</string>
+    <string name="custom_url_scheme">com.universalaquasolutions.attendance</string>
+</resources>

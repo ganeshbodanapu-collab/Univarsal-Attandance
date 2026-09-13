@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.universalaquasolutions.attendance",
+      "sha256_cert_fingerprints": [
+        "BC:06:E7:67:29:76:53:89:09:A2:DC:A5:00:9C:4E:44:D6:CD:FB:D4:1F:F1:AE:CC:6D:FA:F1:2A:62:02:A6:14"
+      ]
+    }
+  }
+]

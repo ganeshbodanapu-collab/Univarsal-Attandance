@@ -1,5 +1,6 @@
 import type { Advance, Recovery, AttendanceSettings } from '../../types';
 import { calculateDailyWage } from './calculateWage';
+import { roundMoney, subtractMoney, multiplyMoney } from '../money';
 
 /**
  * Calculates the total outstanding advance balance for a worker.
@@ -9,9 +10,9 @@ export function calculateAdvanceBalance(
   advances: Advance[],
   recoveries: Recovery[]
 ): number {
-  const totalAdvance = advances.reduce((sum, adv) => sum + adv.amount, 0);
-  const totalRecovery = recoveries.reduce((sum, rec) => sum + rec.amount, 0);
-  const balance = totalAdvance - totalRecovery;
+  const totalAdvance = roundMoney(advances.reduce((sum, adv) => sum + (adv.amount || 0), 0));
+  const totalRecovery = roundMoney(recoveries.reduce((sum, rec) => sum + (rec.amount || 0), 0));
+  const balance = subtractMoney(totalAdvance, totalRecovery);
   return Math.max(0, balance);
 }
 
@@ -30,7 +31,7 @@ export function calculateDailyRecovery(
     case 'perDay': {
       // Receptors: present or halfDay (by default, recovers full amount even on halfDay)
       if (attendanceStatus === 'present' || attendanceStatus === 'halfDay') {
-        return advance.dailyRecoveryAmount || 0;
+        return roundMoney(advance.dailyRecoveryAmount || 0);
       }
       return 0;
     }
@@ -38,7 +39,7 @@ export function calculateDailyRecovery(
       if (attendanceStatus === 'present' || attendanceStatus === 'halfDay') {
         const calculatedWage = calculateDailyWage(attendanceStatus, dailyWage, settings);
         const percentage = advance.recoveryPercentage || 0;
-        return (percentage / 100) * calculatedWage;
+        return multiplyMoney(percentage / 100, calculatedWage);
       }
       return 0;
     }
@@ -48,3 +49,4 @@ export function calculateDailyRecovery(
       return 0;
   }
 }
+
