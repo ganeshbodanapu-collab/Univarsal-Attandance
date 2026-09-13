@@ -301,11 +301,14 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('DISCONNECTED');
 
-  // Supabase Realtime Live Subscription (STEP 22: attendance, section_food_orders, advances, site_migrations)
+  // Supabase Realtime Live Subscription & Auto Data Sync
   useEffect(() => {
     const unsubscribe = realtimeService.subscribeToRealtime({
       onStatusChange: (status) => {
         setRealtimeStatus(status);
+      },
+      onDataRefresh: () => {
+        syncFromSupabase();
       },
       onAttendanceChange: (event, record) => {
         if (event === 'DELETE') {
@@ -375,10 +378,32 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       },
     });
 
+    // Auto-resync when app returns to foreground or window gains focus
+    const handleFocus = () => {
+      syncFromSupabase();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncFromSupabase();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Periodic 15-second auto-sync fallback to ensure zero data stale on mobile networks
+    const syncInterval = setInterval(() => {
+      syncFromSupabase();
+    }, 15000);
+
     return () => {
       unsubscribe();
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(syncInterval);
     };
-  }, []);
+  }, [syncFromSupabase]);
 
   // Sync state to backend when any collection changes
   useEffect(() => {

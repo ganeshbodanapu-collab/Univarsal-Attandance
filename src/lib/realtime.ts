@@ -10,7 +10,12 @@ export type RealtimeTable =
   | 'attendance'
   | 'section_food_orders'
   | 'advances'
-  | 'site_migrations';
+  | 'site_migrations'
+  | 'workers'
+  | 'sites'
+  | 'sections'
+  | 'worker_payments'
+  | 'login_requests';
 
 export type RealtimeStatus = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'ERROR';
 
@@ -35,6 +40,7 @@ export interface RealtimeHandlers {
     record: SiteMigrationRecord,
     oldRecord?: Partial<SiteMigrationRecord>
   ) => void;
+  onDataRefresh?: () => void;
   onStatusChange?: (status: RealtimeStatus) => void;
 }
 
@@ -178,6 +184,18 @@ export const realtimeService = {
         }
       }
     );
+
+    // 5. Universal table change listeners for auto-refresh
+    const extraTables = ['workers', 'sites', 'sections', 'worker_payments', 'login_requests'];
+    extraTables.forEach((tableName) => {
+      channel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: tableName },
+        () => {
+          handlers.onDataRefresh?.();
+        }
+      );
+    });
 
     // Subscribe to channel
     channel.subscribe((status) => {
