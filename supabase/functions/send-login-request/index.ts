@@ -64,21 +64,16 @@ serve(async (req) => {
         .ilike('username', cleanUsername)
         .maybeSingle();
 
-      if (!userRecord) {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'User ID not found.',
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-        );
-      }
-
-      if (userRecord.role) {
-        userRole = String(userRecord.role).toUpperCase();
-      }
-      if (userRecord.assigned_site_id) {
-        userSite = userRecord.assigned_site_id;
+      if (userRecord) {
+        if (userRecord.role) {
+          userRole = String(userRecord.role).toUpperCase();
+        }
+        if (userRecord.assigned_site_id) {
+          userSite = userRecord.assigned_site_id;
+        }
+      } else {
+        userRole = cleanUsername.toLowerCase() === 'admin' ? 'ADMIN (REQUESTED)' : 'SUPERVISOR (REQUESTED)';
+        userSite = 'N/A';
       }
 
       // Check if user already has a PENDING request
@@ -96,7 +91,7 @@ serve(async (req) => {
             error: 'Request already pending.',
             requestId: existingPending.request_id,
           }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
         );
       }
 
@@ -104,7 +99,7 @@ serve(async (req) => {
       await supabaseAdmin.from('login_requests').upsert(
         {
           request_id: cleanRequestId,
-          requested_user_id: userRecord.username || cleanUsername,
+          requested_user_id: userRecord?.username || cleanUsername,
           platform: cleanPlatform,
           request_type: 'Login Access Request',
           status: 'PENDING',
@@ -116,8 +111,8 @@ serve(async (req) => {
       // Insert audit log
       await supabaseAdmin.from('audit_logs').insert({
         action: 'LOGIN_REQUEST',
-        actor_id: userRecord.username || cleanUsername,
-        target_id: userRecord.username || cleanUsername,
+        actor_id: userRecord?.username || cleanUsername,
+        target_id: userRecord?.username || cleanUsername,
         details: { requestId: cleanRequestId, platform: cleanPlatform },
       });
     }
