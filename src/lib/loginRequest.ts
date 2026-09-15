@@ -33,7 +33,28 @@ export async function sendLoginAccessRequest(username: string): Promise<LoginReq
     });
 
     if (error || !data || data.success === false) {
-      const errMsg = data?.error || error?.message || 'Unable to send request to Admin. Please try again.';
+      let errMsg = data?.error || '';
+      if (!errMsg && error) {
+        try {
+          if (error.context && typeof error.context.json === 'function') {
+            const errBody = await error.context.json();
+            errMsg = errBody?.error || errBody?.message || '';
+          } else if (error.context && typeof error.context.text === 'function') {
+            const errText = await error.context.text();
+            try {
+              const parsed = JSON.parse(errText);
+              errMsg = parsed?.error || parsed?.message || '';
+            } catch {}
+          }
+        } catch {}
+        if (!errMsg && error.message && !error.message.includes('non-2xx')) {
+          errMsg = error.message;
+        }
+      }
+      if (!errMsg) {
+        errMsg = 'Unable to send request to Admin. Please check your User ID and try again.';
+      }
+
       if (data?.requestId) {
         localStorage.setItem('pending_login_request_id', data.requestId);
         localStorage.setItem('pending_login_user_id', cleanUsername);

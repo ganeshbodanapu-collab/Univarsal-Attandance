@@ -17,6 +17,28 @@ export interface AppUserProfile {
   lastLogin?: string;
 }
 
+async function parseEdgeError(error: any, data: any, fallbackMessage: string): Promise<string> {
+  if (data?.error) return data.error;
+  if (error) {
+    try {
+      if (error.context && typeof error.context.json === 'function') {
+        const body = await error.context.json();
+        if (body && (body.error || body.message)) return body.error || body.message;
+      } else if (error.context && typeof error.context.text === 'function') {
+        const text = await error.context.text();
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && (parsed.error || parsed.message)) return parsed.error || parsed.message;
+        } catch {}
+      }
+    } catch {}
+    if (error.message && !error.message.includes('non-2xx')) {
+      return error.message;
+    }
+  }
+  return fallbackMessage;
+}
+
 /**
  * Supabase Auth Service
  */
@@ -153,7 +175,8 @@ export const authService = {
       body: { action: 'updateUserCredentials', ...params },
     });
     if (error || !data?.success) {
-      return { success: false, error: data?.error || error?.message || 'Failed to update credentials.' };
+      const errStr = await parseEdgeError(error, data, 'Failed to update credentials.');
+      return { success: false, error: errStr };
     }
     return { success: true, error: null, data };
   },
@@ -166,7 +189,8 @@ export const authService = {
       body: { action: 'updateUserCredentials', targetUsername, newPassword },
     });
     if (error || !data?.success) {
-      return { success: false, error: data?.error || error?.message || 'Failed to update password.' };
+      const errStr = await parseEdgeError(error, data, 'Failed to update password.');
+      return { success: false, error: errStr };
     }
     return { success: true, error: null, data };
   },
@@ -188,7 +212,8 @@ export const authService = {
       body: { action: 'createUser', ...params },
     });
     if (error || !data?.success) {
-      return { success: false, error: data?.error || error?.message || 'Failed to create user.' };
+      const errStr = await parseEdgeError(error, data, 'Failed to create user.');
+      return { success: false, error: errStr };
     }
     return { success: true, error: null, appUser: data.appUser };
   },
