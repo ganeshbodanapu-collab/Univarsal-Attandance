@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAttendanceContext } from '../../context/AttendanceContext';
+import { Capacitor } from '@capacitor/core';
 import {
   Building2,
   Shield,
@@ -24,8 +25,11 @@ export const SiteLogin: React.FC = () => {
   const { sites, workers, currentUser, loginWithCredentials } = useAttendanceContext();
   const navigate = useNavigate();
 
-  // Selected site or 'admin' (null means Step 1: Site Selection)
-  const [selectedPortal, setSelectedPortal] = useState<string | null>(null);
+  // Selected site or 'admin' (null means Step 1: Site Selection / Website Modal)
+  // On Android APK / Capacitor native platform, hide Website Modal and open directly to Login Screen ('admin').
+  const [selectedPortal, setSelectedPortal] = useState<string | null>(
+    Capacitor.isNativePlatform() ? 'admin' : null
+  );
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -86,11 +90,15 @@ export const SiteLogin: React.FC = () => {
         navigate('/dashboard', { replace: true });
       } else {
         setError(result.message || 'Invalid User ID or Password.');
-        setShowRequestButton(true);
+        if (result.userNotFound) {
+          setShowRequestButton(false);
+        } else {
+          setShowRequestButton(true);
+        }
       }
     } catch (err: any) {
       setError(err?.message || 'Invalid User ID or Password.');
-      setShowRequestButton(true);
+      setShowRequestButton(false);
     } finally {
       setLoading(false);
     }
@@ -460,17 +468,6 @@ export const SiteLogin: React.FC = () => {
                 <ArrowLeft className="h-4 w-4" />
                 <span>← Back to Site Selection</span>
               </button>
-
-              {!isAdminPortal && (
-                <button
-                  type="button"
-                  onClick={() => handleSelectSite('admin')}
-                  className="text-xs font-bold text-purple-400 hover:text-purple-300 flex items-center space-x-1 cursor-pointer"
-                >
-                  <Shield className="h-3.5 w-3.5" />
-                  <span>Change to Admin App</span>
-                </button>
-              )}
             </div>
 
             {/* Selected Site / Admin Header Banner */}

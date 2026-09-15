@@ -34,9 +34,14 @@ export async function sendLoginAccessRequest(username: string): Promise<LoginReq
 
     if (error || !data || data.success === false) {
       const errMsg = data?.error || error?.message || 'Unable to send request to Admin. Please try again.';
+      if (data?.requestId) {
+        localStorage.setItem('pending_login_request_id', data.requestId);
+        localStorage.setItem('pending_login_user_id', cleanUsername);
+      }
       return {
         success: false,
         message: errMsg,
+        requestId: data?.requestId,
       };
     }
 

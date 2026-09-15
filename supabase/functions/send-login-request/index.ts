@@ -47,19 +47,64 @@ serve(async (req) => {
     }
 
     const cleanUsername = username.trim();
-    const cleanPlatform = platform || 'ANDROID';
+    const cleanPlatform = platform || 'WEB';
     const cleanRequestId = requestId || `REQ-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const nowStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-    // Store login request in Supabase DB
+    let userRole = 'SUPERVISOR';
+    let userSite = 'S001';
+
+    // 1. Verify User ID exists in app_users table & Check Duplicate Pending Requests
     if (supabaseUrl && supabaseServiceKey) {
       const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
-      // Insert or update login_requests table
+      const { data: userRecord } = await supabaseAdmin
+        .from('app_users')
+        .select('id, username, name, role, assigned_site_id')
+        .ilike('username', cleanUsername)
+        .maybeSingle();
+
+      if (!userRecord) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'User ID not found.',
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+        );
+      }
+
+      if (userRecord.role) {
+        userRole = String(userRecord.role).toUpperCase();
+      }
+      if (userRecord.assigned_site_id) {
+        userSite = userRecord.assigned_site_id;
+      }
+
+      // Check if user already has a PENDING request
+      const { data: existingPending } = await supabaseAdmin
+        .from('login_requests')
+        .select('request_id, status')
+        .ilike('requested_user_id', cleanUsername)
+        .eq('status', 'PENDING')
+        .maybeSingle();
+
+      if (existingPending) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'Request already pending.',
+            requestId: existingPending.request_id,
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+        );
+      }
+
+      // Store login request in Supabase DB
       await supabaseAdmin.from('login_requests').upsert(
         {
           request_id: cleanRequestId,
-          requested_user_id: cleanUsername,
+          requested_user_id: userRecord.username || cleanUsername,
           platform: cleanPlatform,
           request_type: 'Login Access Request',
           status: 'PENDING',
@@ -71,8 +116,8 @@ serve(async (req) => {
       // Insert audit log
       await supabaseAdmin.from('audit_logs').insert({
         action: 'LOGIN_REQUEST',
-        actor_id: cleanUsername,
-        target_id: cleanUsername,
+        actor_id: userRecord.username || cleanUsername,
+        target_id: userRecord.username || cleanUsername,
         details: { requestId: cleanRequestId, platform: cleanPlatform },
       });
     }
@@ -80,29 +125,24 @@ serve(async (req) => {
     const safeUsername = escapeHtml(cleanUsername);
     const safePlatform = escapeHtml(cleanPlatform);
     const safeRequestId = escapeHtml(cleanRequestId);
+    const safeRole = escapeHtml(userRole);
+    const safeSite = escapeHtml(userSite);
 
-    // Format safe Telegram message in HTML parse_mode
-    // IMPORTANT: STEP 27.10 — APPROVE button uses pure callback_data (NO URL attached)
+    // Format safe Telegram message in HTML parse_mode per Section 5 spec
     const messageText = `🔔 <b>UNIVERSAL ATTENDANCE</b>
+
 <b>LOGIN ACCESS REQUEST</b>
 
-<b>User ID:</b>
-<code>${safeUsername}</code>
+<b>User ID:</b> <code>${safeUsername}</code>
+<b>Role:</b> ${safeRole}
+<b>Assigned Site:</b> ${safeSite}
+<b>Platform:</b> ${safePlatform}
+<b>Date & Time:</b> ${escapeHtml(nowStr)}
+<b>Request ID:</b> <code>${safeRequestId}</code>
+<b>Status:</b> Pending
 
-<b>Request Type:</b>
-Login Access Request
-
-<b>Platform:</b>
-${safePlatform}
-
-<b>Date & Time:</b>
-${escapeHtml(nowStr)}
-
-<b>Request ID:</b>
-<code>${safeRequestId}</code>
-
-<b>Status:</b>
-Pending`;
+🌐 <b>Website:</b>
+https://universal-attendance.vercel.app`;
 
     const inlineKeyboard = {
       inline_keyboard: [

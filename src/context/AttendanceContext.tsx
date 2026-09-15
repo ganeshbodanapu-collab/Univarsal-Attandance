@@ -64,7 +64,7 @@ interface AttendanceContextType {
   setCurrentUser: React.Dispatch<React.SetStateAction<AppUser | null>>;
   appUsers: AppUser[];
   switchUser: (userId: string) => void;
-  loginWithCredentials: (username: string, password: string, targetSiteId?: string) => Promise<{ success: boolean; message?: string; user?: AppUser }> | { success: boolean; message?: string; user?: AppUser };
+  loginWithCredentials: (username: string, password: string, targetSiteId?: string) => Promise<{ success: boolean; message?: string; user?: AppUser; userNotFound?: boolean; userExists?: boolean }> | { success: boolean; message?: string; user?: AppUser; userNotFound?: boolean; userExists?: boolean };
   logout: () => void;
   addAppUser: (user: Omit<AppUser, 'id'>) => AppUser;
   updateAppUser: (id: string, updates: Partial<AppUser>) => void;
@@ -502,7 +502,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     username: string,
     password: string,
     targetSiteId?: string
-  ): Promise<{ success: boolean; message?: string; user?: AppUser }> => {
+  ): Promise<{ success: boolean; message?: string; user?: AppUser; userNotFound?: boolean; userExists?: boolean }> => {
     const cleanUser = username.trim().toLowerCase();
 
     let loginEmail = cleanUser;
@@ -523,12 +523,14 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           } else {
             loginEmail = `${cleanUser}@universalattendance.com`;
           }
-        } else {
-          loginEmail = `${cleanUser}@universalattendance.com`;
         }
       } catch {
         loginEmail = `${cleanUser}@universalattendance.com`;
       }
+    }
+
+    if (!foundProfile) {
+      return { success: false, message: 'User ID not found.', userNotFound: true };
     }
 
     // 1. Supabase Auth sign in
@@ -538,7 +540,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     });
 
     if (authErr || !authData.user) {
-      return { success: false, message: 'Invalid User ID or Password.' };
+      return { success: false, message: 'Invalid User ID or Password.', userExists: true };
     }
 
     // 2. Fetch app_users record
