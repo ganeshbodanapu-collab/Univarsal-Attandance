@@ -638,6 +638,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const updateAppUser = (id: string, updates: Partial<AppUser>) => {
     const { password: _p, ...safeUpdates } = updates;
+
     setAppUsers((prev) =>
       prev.map((u) => {
         if (u.id === id) {
@@ -658,6 +659,31 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return u;
       })
     );
+
+    // Persist to Supabase Database app_users table
+    (async () => {
+      try {
+        const dbPayload: any = { updated_at: new Date().toISOString() };
+        if (updates.username !== undefined) {
+          const cleanUn = updates.username.trim().toLowerCase();
+          dbPayload.username = cleanUn;
+          dbPayload.email = cleanUn.includes('@') ? cleanUn : `${cleanUn}@universalattendance.com`;
+        }
+        if (updates.name !== undefined) dbPayload.name = updates.name.trim();
+        if (updates.mobile !== undefined) dbPayload.mobile = updates.mobile.trim();
+        if (updates.email !== undefined) dbPayload.email = updates.email.trim();
+        if (updates.assignedSiteId !== undefined) dbPayload.assigned_site_id = updates.assignedSiteId || null;
+        if (updates.assignedSectionId !== undefined) dbPayload.assigned_section_id = updates.assignedSectionId || null;
+        if (updates.teamName !== undefined) dbPayload.team_name = updates.teamName || null;
+        if (updates.status !== undefined) dbPayload.status = updates.status;
+
+        if (Object.keys(dbPayload).length > 1) {
+          await supabase.from('app_users').update(dbPayload).eq('id', id);
+        }
+      } catch (err) {
+        console.warn('Supabase app_users table update notice:', err);
+      }
+    })();
   };
 
 

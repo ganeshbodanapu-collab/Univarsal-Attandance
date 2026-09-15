@@ -326,7 +326,7 @@ export const Settings: React.FC = () => {
   };
 
   // Save User ID (Username)
-  const handleSaveUsername = (e: React.FormEvent) => {
+  const handleSaveUsername = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeUser) return;
     const cleanUser = newUsername.trim().toLowerCase();
@@ -355,9 +355,20 @@ export const Settings: React.FC = () => {
       return;
     }
 
+    const res = await authService.updateUserCredentials({
+      targetUserId: activeUser.id,
+      targetUsername: activeUser.username,
+      newUsername: cleanUser,
+    });
+
+    if (!res.success) {
+      alert(`Failed to update User ID: ${res.error}`);
+      return;
+    }
+
     updateAppUser(activeUser.id, { username: cleanUser });
     setToastMessage(
-      `User ID updated successfully to "${cleanUser}" for ${activeUser.role === 'admin' ? 'Administrator' : activeUser.name}!`
+      `✓ User ID updated successfully in Supabase Auth & Database to "${cleanUser}" for ${activeUser.role === 'admin' ? 'Administrator' : activeUser.name}!`
     );
   };
 
@@ -385,30 +396,22 @@ export const Settings: React.FC = () => {
 
     setIsSavingPassword(true);
     try {
-      const isSelf = currentUser?.id === activeUser.id;
+      const res = await authService.updateUserCredentials({
+        targetUserId: activeUser.id,
+        targetUsername: activeUser.username,
+        newPassword: newPassword.trim(),
+      });
 
-      if (isSelf) {
-        const { success, error } = await authService.changePassword(newPassword.trim());
-        if (!success) {
-          alert(`Password change failed: ${error || 'Please try again.'}`);
-          return;
-        }
-      } else {
-        const { success, error } = await authService.adminChangeUserPassword(
-          activeUser.username,
-          newPassword.trim()
-        );
-        if (!success) {
-          alert(`Password change failed: ${error || 'Please try again.'}`);
-          return;
-        }
+      if (!res.success) {
+        alert(`Password change failed: ${res.error || 'Please try again.'}`);
+        return;
       }
 
       updateAppUser(activeUser.id, {});
       setNewPassword('');
       setConfirmPassword('');
       setToastMessage(
-        `Password changed successfully in Supabase Auth for ${activeUser.role === 'admin' ? 'Administrator (' + activeUser.username + ')' : activeUser.name}!`
+        `✓ Password changed successfully in Supabase Auth & Database for ${activeUser.role === 'admin' ? 'Administrator (' + activeUser.username + ')' : activeUser.name}!`
       );
     } finally {
       setIsSavingPassword(false);

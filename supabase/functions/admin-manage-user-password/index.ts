@@ -25,7 +25,7 @@ serve(async (req) => {
 
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
     const body = await req.json();
-    const { action, targetUsername, targetAuthUserId, newPassword, name, role, assignedSiteId, assignedSectionId, mobile, email } = body;
+    const { action, targetUserId, targetUsername, targetAuthUserId, newUsername, newPassword, name, role, assignedSiteId, assignedSectionId, mobile, email } = body;
 
     // SEED DEFAULT USERS (Bypasses JWT check so seed script can initialize default accounts)
     if (action === 'seedDefaultUsers') {
@@ -121,11 +121,27 @@ serve(async (req) => {
     }
 
     // Check calling user role in app_users
-    const { data: callingAppUser } = await supabaseAdmin
+    let { data: callingAppUser } = await supabaseAdmin
       .from('app_users')
-      .select('role')
+      .select('role, id')
       .eq('auth_user_id', callingUser.id)
       .maybeSingle();
+
+    if (!callingAppUser && callingUser.email) {
+      const { data: pByEmail } = await supabaseAdmin
+        .from('app_users')
+        .select('role, id')
+        .ilike('email', callingUser.email)
+        .maybeSingle();
+
+      if (pByEmail) {
+        callingAppUser = pByEmail;
+        await supabaseAdmin
+          .from('app_users')
+          .update({ auth_user_id: callingUser.id })
+          .eq('id', pByEmail.id);
+      }
+    }
 
     if (!callingAppUser || callingAppUser.role !== 'admin') {
       return new Response(
@@ -192,42 +208,86 @@ serve(async (req) => {
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       );
 
-    } else if (action === 'changePassword') {
-      if (!newPassword) {
+    } else if (action === 'changePassword' || action === 'updateUserCredentials' || action === 'updateUsername') {
+      const targetUserStr = targetUserId || targetUsername || (body.userId ? body.userId : '');
+      const cleanNewUser = newUsername ? newUsername.trim().toLowerCase() : '';
+      const cleanNewPass = newPassword ? newPassword.trim() : '';
+
+      if (!targetUserStr && !callingUser) {
         return new Response(
-          JSON.stringify({ success: false, error: 'New password is required.' }),
+          JSON.stringify({ success: false, error: 'Target user ID or username is required.' }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
         );
       }
 
-      let authUserIdToUpdate = targetAuthUserId;
-      let cleanUser = targetUsername ? targetUsername.trim().toLowerCase() : '';
+      // Find target profile in app_users
       let targetProfile: any = null;
 
-      if (cleanUser) {
-        const { data: profile } = await supabaseAdmin
+      if (targetUserStr) {
+        const { data: pById } = await supabaseAdmin
           .from('app_users')
           .select('*')
-          .ilike('username', cleanUser)
+          .eq('id', targetUserStr)
           .maybeSingle();
 
-        if (profile) {
-          targetProfile = profile;
-          if (profile.auth_user_id) {
-            authUserIdToUpdate = profile.auth_user_id;
-          }
+        if (pById) {
+          targetProfile = pById;
+        } else {
+          const { data: pByUn } = await supabaseAdmin
+            .from('app_users')
+            .select('*')
+            .ilike('username', targetUserStr)
+            .maybeSingle();
+          if (pByUn) targetProfile = pByUn;
         }
       }
 
-      if (!authUserIdToUpdate && (cleanUser || targetProfile)) {
-        const userEmail = targetProfile?.email || (cleanUser.includes('@') ? cleanUser : `${cleanUser}@universalattendance.com`);
+      if (!targetProfile && callingUser) {
+        const { data: pByAuth } = await supabaseAdmin
+          .from('app_users')
+          .select('*')
+          .eq('auth_user_id', callingUser.id)
+          .maybeSingle();
+        if (pByAuth) targetProfile = pByAuth;
+      }
+
+      if (!targetProfile) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'User profile not found.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 404 }
+        );
+      }
+
+      const updatedUsername = cleanNewUser || targetProfile.username;
+      const updatedEmail = updatedUsername.includes('@')
+        ? updatedUsername
+        : `${updatedUsername}@universalattendance.com`;
+
+      // 1. Update app_users table in Supabase DB
+      const dbUpdates: any = {
+        username: updatedUsername,
+        email: updatedEmail,
+        updated_at: new Date().toISOString(),
+      };
+
+      await supabaseAdmin.from('app_users').update(dbUpdates).eq('id', targetProfile.id);
+
+      // 2. Locate or create Supabase Auth User
+      let authUserIdToUpdate = targetProfile.auth_user_id;
+
+      if (!authUserIdToUpdate) {
         const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
-        let existingAuth = listData?.users?.find((u) => u.email?.toLowerCase() === userEmail.toLowerCase());
+        let existingAuth = listData?.users?.find(
+          (u) =>
+            u.id === callingUser?.id ||
+            u.email?.toLowerCase() === targetProfile.email?.toLowerCase() ||
+            u.email?.toLowerCase() === updatedEmail.toLowerCase()
+        );
 
         if (!existingAuth) {
           const { data: createdAuth } = await supabaseAdmin.auth.admin.createUser({
-            email: userEmail,
-            password: newPassword,
+            email: updatedEmail,
+            password: cleanNewPass || 'Default@Password2026',
             email_confirm: true,
           });
           if (createdAuth?.user) {
@@ -237,36 +297,42 @@ serve(async (req) => {
 
         if (existingAuth) {
           authUserIdToUpdate = existingAuth.id;
-          if (targetProfile) {
-            await supabaseAdmin
-              .from('app_users')
-              .update({ auth_user_id: existingAuth.id, email: userEmail })
-              .eq('id', targetProfile.id);
-          }
+          await supabaseAdmin
+            .from('app_users')
+            .update({ auth_user_id: existingAuth.id })
+            .eq('id', targetProfile.id);
         }
       }
 
       if (!authUserIdToUpdate) {
         return new Response(
-          JSON.stringify({ success: false, error: 'Target user profile or auth_user_id not found.' }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 404 }
+          JSON.stringify({ success: false, error: 'Unable to locate associated Supabase Auth account.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
         );
       }
 
+      // 3. Update Supabase Auth user record (email and/or password)
+      const authUpdatePayload: any = {};
+      if (updatedEmail) authUpdatePayload.email = updatedEmail;
+      if (cleanNewPass) authUpdatePayload.password = cleanNewPass;
+
       const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
         authUserIdToUpdate,
-        { password: newPassword }
+        authUpdatePayload
       );
 
       if (updateAuthErr) {
         return new Response(
-          JSON.stringify({ success: false, error: `Failed to update password: ${updateAuthErr.message}` }),
+          JSON.stringify({ success: false, error: `Failed to update Auth credentials: ${updateAuthErr.message}` }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
         );
       }
 
       return new Response(
-        JSON.stringify({ success: true, message: 'Password updated successfully in Supabase Auth.' }),
+        JSON.stringify({
+          success: true,
+          message: 'User credentials (User ID & Password) updated successfully in Supabase Auth & Database.',
+        }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       );
 
@@ -278,6 +344,7 @@ serve(async (req) => {
     }
 
   } catch (err) {
+    console.error('Edge Function internal error stack:', err);
     return new Response(
       JSON.stringify({ success: false, error: `Internal error: ${err instanceof Error ? err.message : String(err)}` }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }

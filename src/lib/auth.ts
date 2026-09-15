@@ -114,11 +114,29 @@ export const authService = {
   },
 
   /**
+   * Admin or User updates User ID (username/email) and/or Password via Edge Function
+   */
+  async updateUserCredentials(params: {
+    targetUserId?: string;
+    targetUsername?: string;
+    newUsername?: string;
+    newPassword?: string;
+  }) {
+    const { data, error } = await supabase.functions.invoke('admin-manage-user-password', {
+      body: { action: 'updateUserCredentials', ...params },
+    });
+    if (error || !data?.success) {
+      return { success: false, error: data?.error || error?.message || 'Failed to update credentials.' };
+    }
+    return { success: true, error: null, data };
+  },
+
+  /**
    * Admin resets/changes password for target username via Edge Function
    */
   async adminChangeUserPassword(targetUsername: string, newPassword: string) {
     const { data, error } = await supabase.functions.invoke('admin-manage-user-password', {
-      body: { action: 'changePassword', targetUsername, newPassword },
+      body: { action: 'updateUserCredentials', targetUsername, newPassword },
     });
     if (error || !data?.success) {
       return { success: false, error: data?.error || error?.message || 'Failed to update password.' };
