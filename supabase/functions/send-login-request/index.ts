@@ -89,8 +89,10 @@ serve(async (req) => {
           userSite = userRecord.assigned_site_id;
         }
       } else {
-        userRole = cleanUsername.toLowerCase() === 'admin' ? 'ADMIN (REQUESTED)' : 'SUPERVISOR (REQUESTED)';
-        userSite = 'N/A';
+        return new Response(
+          JSON.stringify({ success: false, error: 'User ID not found.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+        );
       }
 
       // Check if user already has a PENDING request

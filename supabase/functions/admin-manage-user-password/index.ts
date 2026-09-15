@@ -48,7 +48,7 @@ serve(async (req) => {
           name: 'Downtown Supervisor',
           role: 'supervisor',
           assigned_site_id: 'S001',
-          assigned_section_id: 'SEC001',
+          assigned_section_id: null,
         },
       ];
 
@@ -56,10 +56,10 @@ serve(async (req) => {
       const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
 
       for (const u of defaultUsers) {
-        let authUser = listData?.users?.find((x) => x.email === u.email);
+        let authUser = listData?.users?.find((x) => x.email?.toLowerCase() === u.email.toLowerCase());
 
         if (!authUser) {
-          const { data: createdAuth, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+          const { data: createdAuth } = await supabaseAdmin.auth.admin.createUser({
             email: u.email,
             password: u.password,
             email_confirm: true,
@@ -72,10 +72,38 @@ serve(async (req) => {
         }
 
         if (authUser) {
-          const { data: profile, error: profileErr } = await supabaseAdmin
+          // Check if app_users record exists by username, id, or email
+          const { data: existingAppUser } = await supabaseAdmin
             .from('app_users')
-            .upsert(
-              {
+            .select('id')
+            .or(`username.eq.${u.username},id.eq.${u.id},email.eq.${u.email}`)
+            .maybeSingle();
+
+          let profile = null;
+          let profileErr = null;
+
+          if (existingAppUser) {
+            const { data: updatedP, error: uErr } = await supabaseAdmin
+              .from('app_users')
+              .update({
+                auth_user_id: authUser.id,
+                name: u.name,
+                role: u.role,
+                assigned_site_id: u.assigned_site_id,
+                assigned_section_id: u.assigned_section_id,
+                email: u.email,
+                status: 'active',
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', existingAppUser.id)
+              .select()
+              .single();
+            profile = updatedP;
+            profileErr = uErr;
+          } else {
+            const { data: insertedP, error: iErr } = await supabaseAdmin
+              .from('app_users')
+              .insert({
                 id: u.id,
                 auth_user_id: authUser.id,
                 username: u.username,
@@ -85,11 +113,12 @@ serve(async (req) => {
                 assigned_section_id: u.assigned_section_id,
                 email: u.email,
                 status: 'active',
-              },
-              { onConflict: 'username' }
-            )
-            .select()
-            .single();
+              })
+              .select()
+              .single();
+            profile = insertedP;
+            profileErr = iErr;
+          }
 
           results.push({ username: u.username, email: u.email, auth_user_id: authUser.id, profile, error: profileErr?.message });
         }
@@ -97,6 +126,41 @@ serve(async (req) => {
 
       return new Response(
         JSON.stringify({ success: true, seeded: results }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      );
+    }
+
+    if (action === 'cleanTestData') {
+      const { data: allReqs } = await supabaseAdmin.from('login_requests').select('id');
+      let deletedReqsCount = 0;
+      if (allReqs && allReqs.length > 0) {
+        const idsToDelete = allReqs.map((r: any) => r.id);
+        await supabaseAdmin.from('login_requests').delete().in('id', idsToDelete);
+        deletedReqsCount = idsToDelete.length;
+      }
+
+      const { data: allUsers } = await supabaseAdmin.from('app_users').select('*');
+      const validUsernames = ['admin', 'ganesh', 'site_s001', 'site_s002', 'site_s003'];
+      const testUsersToDelete = allUsers?.filter((u: any) => !validUsernames.includes(u.username.toLowerCase())) || [];
+
+      for (const u of testUsersToDelete) {
+        await supabaseAdmin.from('app_users').delete().eq('id', u.id);
+        if (u.auth_user_id) {
+          await supabaseAdmin.auth.admin.deleteUser(u.auth_user_id).catch(() => {});
+        }
+      }
+
+      const { data: remainingUsers } = await supabaseAdmin.from('app_users').select('id, username, role, email, assigned_site_id');
+      const { count: reqCount } = await supabaseAdmin.from('login_requests').select('*', { count: 'exact' });
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          deletedReqsCount,
+          deletedTestUsersCount: testUsersToDelete.length,
+          remainingUsers,
+          remainingLoginRequestsCount: reqCount,
+        }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       );
     }
