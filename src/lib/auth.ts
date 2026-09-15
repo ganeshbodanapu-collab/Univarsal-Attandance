@@ -171,7 +171,15 @@ export const authService = {
     newUsername?: string;
     newPassword?: string;
   }) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const { data, error } = await supabase.functions.invoke('admin-manage-user-password', {
+      headers,
       body: { action: 'updateUserCredentials', ...params },
     });
     if (error || !data?.success) {
@@ -185,7 +193,15 @@ export const authService = {
    * Admin resets/changes password for target username via Edge Function
    */
   async adminChangeUserPassword(targetUsername: string, newPassword: string) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const { data, error } = await supabase.functions.invoke('admin-manage-user-password', {
+      headers,
       body: { action: 'updateUserCredentials', targetUsername, newPassword },
     });
     if (error || !data?.success) {
@@ -208,7 +224,15 @@ export const authService = {
     mobile?: string;
     email?: string;
   }) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const { data, error } = await supabase.functions.invoke('admin-manage-user-password', {
+      headers,
       body: { action: 'createUser', ...params },
     });
     if (error || !data?.success) {

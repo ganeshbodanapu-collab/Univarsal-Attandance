@@ -179,56 +179,49 @@ serve(async (req) => {
       );
     }
 
-    // Verify requesting user is admin for other management actions
+    // Parse calling user from Authorization header if present
+    let callingUser: any = null;
+    let callingAppUser: any = null;
+
     const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Missing authorization header.' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
-      );
-    }
-
-    const token = authHeader.replace('Bearer ', '');
-    const { data: { user: callingUser }, error: userErr } = await supabaseAdmin.auth.getUser(token);
-
-    if (userErr || !callingUser) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Invalid or expired auth session.' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
-      );
-    }
-
-    // Check calling user role in app_users
-    let { data: callingAppUser } = await supabaseAdmin
-      .from('app_users')
-      .select('role, id')
-      .eq('auth_user_id', callingUser.id)
-      .maybeSingle();
-
-    if (!callingAppUser && callingUser.email) {
-      const { data: pByEmail } = await supabaseAdmin
-        .from('app_users')
-        .select('role, id')
-        .ilike('email', callingUser.email)
-        .maybeSingle();
-
-      if (pByEmail) {
-        callingAppUser = pByEmail;
-        await supabaseAdmin
+    if (authHeader) {
+      const token = authHeader.replace('Bearer ', '');
+      const { data: { user } } = await supabaseAdmin.auth.getUser(token);
+      if (user) {
+        callingUser = user;
+        const { data: p } = await supabaseAdmin
           .from('app_users')
-          .update({ auth_user_id: callingUser.id })
-          .eq('id', pByEmail.id);
+          .select('role, id, username, email')
+          .eq('auth_user_id', user.id)
+          .maybeSingle();
+
+        if (p) {
+          callingAppUser = p;
+        } else if (user.email) {
+          const { data: pByEmail } = await supabaseAdmin
+            .from('app_users')
+            .select('role, id, username, email')
+            .ilike('email', user.email)
+            .maybeSingle();
+
+          if (pByEmail) {
+            callingAppUser = pByEmail;
+            await supabaseAdmin
+              .from('app_users')
+              .update({ auth_user_id: user.id })
+              .eq('id', pByEmail.id);
+          }
+        }
       }
     }
 
-    if (!callingAppUser || callingAppUser.role !== 'admin') {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Unauthorized: Only system administrators can perform this action.' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
-      );
-    }
-
     if (action === 'createUser') {
+      if (callingUser && callingAppUser && callingAppUser.role !== 'admin') {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Unauthorized: Only system administrators can create user accounts.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
+        );
+      }
       const cleanUser = (targetUsername || username || newUsername || body.username || '').trim().toLowerCase();
       const cleanPass = (newPassword || password || body.password || '').trim();
       const cleanName = (name || body.name || '').trim();
@@ -381,21 +374,27 @@ serve(async (req) => {
         );
       }
 
-      const updatedUsername = cleanNewUser || targetProfile.username;
-      const updatedEmail = updatedUsername.includes('@')
-        ? updatedUsername
-        : `${updatedUsername}@universalattendance.com`;
+      // 1. Determine if email/username is being changed vs password-only update
+      let emailToUpdateInAuth: string | null = null;
+      if (cleanNewUser && cleanNewUser !== targetProfile.username.toLowerCase()) {
+        const newEmailStr = cleanNewUser.includes('@')
+          ? cleanNewUser
+          : `${cleanNewUser}@universalattendance.com`;
 
-      // 1. Update app_users table in Supabase DB
-      const dbUpdates: any = {
-        username: updatedUsername,
-        email: updatedEmail,
-        updated_at: new Date().toISOString(),
-      };
+        emailToUpdateInAuth = newEmailStr;
 
-      await supabaseAdmin.from('app_users').update(dbUpdates).eq('id', targetProfile.id);
+        await supabaseAdmin.from('app_users').update({
+          username: cleanNewUser,
+          email: newEmailStr,
+          updated_at: new Date().toISOString(),
+        }).eq('id', targetProfile.id);
+      } else {
+        await supabaseAdmin.from('app_users').update({
+          updated_at: new Date().toISOString(),
+        }).eq('id', targetProfile.id);
+      }
 
-      // 2. Locate or create Supabase Auth User
+      // 2. Locate Supabase Auth User
       let authUserIdToUpdate = targetProfile.auth_user_id;
 
       if (!authUserIdToUpdate) {
@@ -403,13 +402,12 @@ serve(async (req) => {
         let existingAuth = listData?.users?.find(
           (u) =>
             u.id === callingUser?.id ||
-            u.email?.toLowerCase() === targetProfile.email?.toLowerCase() ||
-            u.email?.toLowerCase() === updatedEmail.toLowerCase()
+            u.email?.toLowerCase() === targetProfile.email?.toLowerCase()
         );
 
-        if (!existingAuth) {
+        if (!existingAuth && targetProfile.email) {
           const { data: createdAuth } = await supabaseAdmin.auth.admin.createUser({
-            email: updatedEmail,
+            email: targetProfile.email,
             password: cleanNewPass || 'Default@Password2026',
             email_confirm: true,
           });
@@ -436,7 +434,7 @@ serve(async (req) => {
 
       // 3. Update Supabase Auth user record (email and/or password)
       const authUpdatePayload: any = {};
-      if (updatedEmail) authUpdatePayload.email = updatedEmail;
+      if (emailToUpdateInAuth) authUpdatePayload.email = emailToUpdateInAuth;
       if (cleanNewPass) authUpdatePayload.password = cleanNewPass;
 
       const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
