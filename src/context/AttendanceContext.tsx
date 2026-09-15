@@ -506,34 +506,11 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const cleanUser = username.trim().toLowerCase();
 
     let loginEmail = cleanUser;
-    let foundProfile: any = null;
-
     if (!cleanUser.includes('@')) {
-      try {
-        const { data: userProfile } = await supabase
-          .from('app_users')
-          .select('*')
-          .ilike('username', cleanUser)
-          .maybeSingle();
-
-        if (userProfile) {
-          foundProfile = userProfile;
-          if (userProfile.email) {
-            loginEmail = userProfile.email;
-          } else {
-            loginEmail = `${cleanUser}@universalattendance.com`;
-          }
-        }
-      } catch {
-        loginEmail = `${cleanUser}@universalattendance.com`;
-      }
+      loginEmail = `${cleanUser}@universalattendance.com`;
     }
 
-    if (!foundProfile) {
-      return { success: false, message: 'User ID not found.', userNotFound: true };
-    }
-
-    // 1. Supabase Auth sign in
+    // 1. Supabase Auth sign in directly using email format
     const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
       email: loginEmail,
       password: password,
@@ -543,25 +520,36 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       return { success: false, message: 'Invalid User ID or Password.', userExists: true };
     }
 
-    // 2. Fetch app_users record
-    let profile = foundProfile;
-    if (!profile || profile.auth_user_id !== authData.user.id) {
-      const { data: fetchedProfile } = await supabase
+    // 2. Fetch app_users record now that session is authenticated
+    let profile: any = null;
+    const { data: fetchedProfile } = await supabase
+      .from('app_users')
+      .select('*')
+      .eq('auth_user_id', authData.user.id)
+      .maybeSingle();
+
+    if (fetchedProfile) {
+      profile = fetchedProfile;
+    } else {
+      // Fallback lookup by username if auth_user_id is not yet linked
+      const { data: profileByUsername } = await supabase
         .from('app_users')
         .select('*')
-        .eq('auth_user_id', authData.user.id)
+        .ilike('username', cleanUser)
         .maybeSingle();
 
-      if (fetchedProfile) {
-        profile = fetchedProfile;
-      } else if (foundProfile) {
-        // Link auth_user_id to foundProfile
+      if (profileByUsername) {
         await supabase
           .from('app_users')
           .update({ auth_user_id: authData.user.id, email: loginEmail })
-          .eq('id', foundProfile.id);
-        profile = { ...foundProfile, auth_user_id: authData.user.id, email: loginEmail };
+          .eq('id', profileByUsername.id);
+        profile = { ...profileByUsername, auth_user_id: authData.user.id, email: loginEmail };
       }
+    }
+
+    if (!profile) {
+      await supabase.auth.signOut();
+      return { success: false, message: 'Access denied: User profile not found in app database.' };
     }
 
     if (!profile) {
