@@ -47,9 +47,45 @@ serve(async (req) => {
 
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
     const callbackQuery = body.callback_query;
+    const textMessage = body.message;
+
+    if (!callbackQuery && textMessage && textMessage.chat) {
+      const incomingChatId = String(textMessage.chat.id);
+      const senderName = textMessage.from?.first_name || 'Admin';
+
+      // Reply with welcome & Chat ID verification
+      const welcomeText = `🔔 <b>UNIVERSAL ATTENDANCE ADMIN BOT</b>
+
+👋 Welcome, <b>${escapeHtml(senderName)}</b>!
+
+<b>Admin Telegram Chat ID:</b> <code>${incomingChatId}</code>
+
+✅ Your chat ID is registered. You will receive all <b>Login Access Requests</b> & approval alerts in this chat with <b>[ ✅ APPROVE ]</b> and <b>[ ❌ REJECT ]</b> buttons.`;
+
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: incomingChatId,
+          text: welcomeText,
+          parse_mode: 'HTML',
+        }),
+      });
+
+      // Save dynamically registered Admin Telegram Chat ID to DB
+      await supabaseAdmin.from('system_config').upsert({
+        key: 'admin_telegram_chat_id',
+        value: incomingChatId,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'key' }).catch(() => {});
+
+      return new Response(JSON.stringify({ ok: true, registeredChatId: incomingChatId }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    }
 
     if (!callbackQuery) {
-      // Not a callback query (e.g. normal text message)
       return new Response(JSON.stringify({ ok: true, message: 'No callback query to process.' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,

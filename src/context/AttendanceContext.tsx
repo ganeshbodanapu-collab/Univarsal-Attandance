@@ -486,8 +486,25 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   };
 
   const auth = useAuth();
-  const currentUser = auth.appUser;
-  const setCurrentUser = (_user: React.SetStateAction<AppUser | null>) => {
+  const [internalUser, setInternalUser] = useState<AppUser | null>(null);
+
+  useEffect(() => {
+    if (auth.appUser) {
+      setInternalUser(auth.appUser);
+    }
+  }, [auth.appUser]);
+
+  const currentUser = internalUser || auth.appUser;
+
+  const setCurrentUser = (user: React.SetStateAction<AppUser | null>) => {
+    if (typeof user === 'function') {
+      setInternalUser((prev) => {
+        const next = user(prev);
+        return next;
+      });
+    } else {
+      setInternalUser(user);
+    }
     auth.refreshProfile();
   };
 
@@ -564,7 +581,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     // 3. Role-wise site permission validation
     if (targetSiteId && targetSiteId !== 'admin') {
-      if (profile.role !== 'admin' && profile.assigned_site_id !== targetSiteId) {
+      if (profile.role !== 'admin' && profile.assigned_site_id && profile.assigned_site_id !== targetSiteId) {
         const targetSiteObj = sites.find((s) => s.id === targetSiteId);
         const userSiteObj = sites.find((s) => s.id === profile.assigned_site_id);
         await supabase.auth.signOut();

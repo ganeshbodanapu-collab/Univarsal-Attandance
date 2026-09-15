@@ -31,9 +31,26 @@ serve(async (req) => {
     }
 
     const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN');
-    const chatId = Deno.env.get('ADMIN_TELEGRAM_CHAT_ID') || '1092499824';
+    let chatId = Deno.env.get('ADMIN_TELEGRAM_CHAT_ID') || '1092499824';
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+    if (supabaseUrl && supabaseServiceKey) {
+      try {
+        const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+        const { data: cfg } = await supabaseAdmin
+          .from('system_config')
+          .select('value')
+          .eq('key', 'admin_telegram_chat_id')
+          .maybeSingle();
+
+        if (cfg?.value) {
+          chatId = String(cfg.value);
+        }
+      } catch {
+        // use default chatId
+      }
+    }
 
     if (!botToken) {
       console.error('TELEGRAM_BOT_TOKEN secret is missing in Supabase Edge Function environment.');
