@@ -67,13 +67,40 @@ export const authService = {
    */
   async fetchAppUserProfile(authUserId: string): Promise<AppUser | null> {
     try {
-      const { data, error } = await supabase
+      // 1. Primary lookup by auth_user_id
+      let { data } = await supabase
         .from('app_users')
         .select('*')
         .eq('auth_user_id', authUserId)
         .maybeSingle();
 
-      if (error || !data) {
+      // 2. Fallback lookup by email or username if auth_user_id is not linked yet
+      if (!data) {
+        const { data: userData } = await supabase.auth.getUser();
+        const authUser = userData?.user;
+
+        if (authUser && authUser.email) {
+          const userEmail = authUser.email.toLowerCase();
+          const cleanUsername = userEmail.includes('@') ? userEmail.split('@')[0] : userEmail;
+
+          const { data: pByEmail } = await supabase
+            .from('app_users')
+            .select('*')
+            .or(`email.ilike.${userEmail},username.ilike.${cleanUsername}`)
+            .maybeSingle();
+
+          if (pByEmail) {
+            data = pByEmail;
+            // Link auth_user_id permanently in Supabase app_users table
+            await supabase
+              .from('app_users')
+              .update({ auth_user_id: authUserId, email: userEmail })
+              .eq('id', pByEmail.id);
+          }
+        }
+      }
+
+      if (!data) {
         return null;
       }
 

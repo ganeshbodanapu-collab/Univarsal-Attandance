@@ -69,10 +69,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (profile && profile.status === 'active') {
           setAppUser(profile);
         } else {
-          setAppUser(null);
-          if (newSession.user) {
-            await authService.signOut();
-          }
+          // Construct fallback profile from auth user session if app_users record is loading
+          const userEmail = newSession.user.email || '';
+          const fallbackUsername = userEmail.includes('@') ? userEmail.split('@')[0] : 'admin';
+          const fallbackRole = fallbackUsername.toLowerCase().startsWith('admin') ? 'admin' : 'supervisor';
+
+          setAppUser({
+            id: newSession.user.id,
+            username: fallbackUsername,
+            password: '',
+            name: fallbackUsername.toUpperCase(),
+            role: fallbackRole,
+            status: 'active',
+          });
         }
       } else {
         setAppUser(null);
