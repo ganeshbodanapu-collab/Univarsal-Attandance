@@ -99,9 +99,24 @@ serve(async (req) => {
     const chatId = String(message.chat?.id || fromUser.id);
     const messageId = message.message_id;
 
-    // Security check: Verify Admin Telegram identity
-    if (adminChatId && chatId !== String(adminChatId) && String(fromUser.id) !== String(adminChatId)) {
-      console.warn(`Unauthorized callback attempt from Telegram User ID ${fromUser.id} / Chat ID ${chatId}`);
+    // Fetch dynamically registered Admin Chat ID from system_config table
+    let activeAdminChatId = adminChatId;
+    try {
+      const { data: cfg } = await supabaseAdmin
+        .from('system_config')
+        .select('value')
+        .eq('key', 'admin_telegram_chat_id')
+        .maybeSingle();
+      if (cfg?.value) {
+        activeAdminChatId = String(cfg.value);
+      }
+    } catch {
+      // fallback to env adminChatId
+    }
+
+    // Security check: Verify Admin Telegram identity against active registered chat ID
+    if (activeAdminChatId && chatId !== String(activeAdminChatId) && String(fromUser.id) !== String(activeAdminChatId)) {
+      console.warn(`Unauthorized callback attempt from Telegram User ID ${fromUser.id} / Chat ID ${chatId} (Expected Admin Chat ID: ${activeAdminChatId})`);
       await fetch(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

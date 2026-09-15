@@ -25,7 +25,7 @@ serve(async (req) => {
 
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
     const body = await req.json();
-    const { action, targetUserId, targetUsername, targetAuthUserId, newUsername, newPassword, name, role, assignedSiteId, assignedSectionId, mobile, email } = body;
+    const { action, targetUserId, targetUsername, targetAuthUserId, newUsername, newPassword, name, role, assignedSiteId, assignedSectionId, mobile, email, username, password, userId } = body;
 
     // SEED DEFAULT USERS (Bypasses JWT check so seed script can initialize default accounts)
     if (action === 'seedDefaultUsers') {
@@ -56,7 +56,17 @@ serve(async (req) => {
       const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
 
       for (const u of defaultUsers) {
-        let authUser = listData?.users?.find((x) => x.email?.toLowerCase() === u.email.toLowerCase());
+        // Check if app_users record exists by username, id, or email
+        const { data: existingAppUser } = await supabaseAdmin
+          .from('app_users')
+          .select('id, auth_user_id')
+          .or(`username.eq.${u.username},id.eq.${u.id},email.eq.${u.email}`)
+          .maybeSingle();
+
+        let authUser = listData?.users?.find((x) =>
+          x.email?.toLowerCase() === u.email.toLowerCase() ||
+          (existingAppUser?.auth_user_id && x.id === existingAppUser.auth_user_id)
+        );
 
         if (!authUser) {
           const { data: createdAuth } = await supabaseAdmin.auth.admin.createUser({
@@ -68,7 +78,11 @@ serve(async (req) => {
             authUser = createdAuth.user;
           }
         } else {
-          await supabaseAdmin.auth.admin.updateUserById(authUser.id, { password: u.password });
+          await supabaseAdmin.auth.admin.updateUserById(authUser.id, {
+            email: u.email,
+            password: u.password,
+            email_confirm: true,
+          });
         }
 
         if (authUser) {
@@ -215,50 +229,95 @@ serve(async (req) => {
     }
 
     if (action === 'createUser') {
-      if (!targetUsername || !newPassword || !name) {
+      const cleanUser = (targetUsername || username || newUsername || body.username || '').trim().toLowerCase();
+      const cleanPass = (newPassword || password || body.password || '').trim();
+      const cleanName = (name || body.name || '').trim();
+      const siteIdToAssign = assignedSiteId || body.assigned_site_id || null;
+      const sectionIdToAssign = assignedSectionId || body.assigned_section_id || null;
+
+      if (!cleanUser || !cleanPass || !cleanName) {
         return new Response(
-          JSON.stringify({ success: false, error: 'Username, password, and name are required.' }),
+          JSON.stringify({ success: false, error: 'User ID (username), password, and full name are required.' }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
         );
       }
 
-      const cleanUser = targetUsername.trim().toLowerCase();
       const userEmail = email && email.includes('@') ? email.trim() : `${cleanUser}@universalattendance.com`;
 
-      // Create in auth.users
-      const { data: newAuthData, error: createAuthErr } = await supabaseAdmin.auth.admin.createUser({
-        email: userEmail,
-        password: newPassword,
-        email_confirm: true,
-      });
+      // Check if app_user already exists
+      const { data: existingAppUser } = await supabaseAdmin
+        .from('app_users')
+        .select('id')
+        .ilike('username', cleanUser)
+        .maybeSingle();
 
-      if (createAuthErr || !newAuthData.user) {
-        return new Response(
-          JSON.stringify({ success: false, error: `Failed to create user in Auth: ${createAuthErr?.message}` }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-        );
+      let authUserId: string | null = null;
+      const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
+      let existingAuth = listData?.users?.find((u) => u.email?.toLowerCase() === userEmail.toLowerCase());
+
+      if (!existingAuth) {
+        const { data: newAuthData, error: createAuthErr } = await supabaseAdmin.auth.admin.createUser({
+          email: userEmail,
+          password: cleanPass,
+          email_confirm: true,
+        });
+
+        if (createAuthErr || !newAuthData.user) {
+          return new Response(
+            JSON.stringify({ success: false, error: `Failed to create user in Auth: ${createAuthErr?.message}` }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+          );
+        }
+        authUserId = newAuthData.user.id;
+      } else {
+        await supabaseAdmin.auth.admin.updateUserById(existingAuth.id, { password: cleanPass });
+        authUserId = existingAuth.id;
       }
 
-      // Generate a unique ID if not provided
-      const newId = `U_${Date.now().toString(36)}`;
+      let appUser: any = null;
+      let appUserErr: any = null;
 
-      // Create in app_users
-      const { data: appUser, error: appUserErr } = await supabaseAdmin
-        .from('app_users')
-        .insert({
-          id: newId,
-          auth_user_id: newAuthData.user.id,
-          username: cleanUser,
-          name: name.trim(),
-          role: role || 'supervisor',
-          assigned_site_id: assignedSiteId || null,
-          assigned_section_id: assignedSectionId || null,
-          mobile: mobile ? mobile.trim() : null,
-          email: userEmail,
-          status: 'active',
-        })
-        .select()
-        .single();
+      if (existingAppUser) {
+        const { data: updatedP, error: uErr } = await supabaseAdmin
+          .from('app_users')
+          .update({
+            auth_user_id: authUserId,
+            name: cleanName,
+            role: role || 'supervisor',
+            assigned_site_id: siteIdToAssign,
+            assigned_section_id: sectionIdToAssign,
+            mobile: mobile ? mobile.trim() : null,
+            email: userEmail,
+            status: 'active',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existingAppUser.id)
+          .select()
+          .single();
+        appUser = updatedP;
+        appUserErr = uErr;
+      } else {
+        const newId = `U_${Date.now().toString(36)}`;
+        const { data: insertedP, error: iErr } = await supabaseAdmin
+          .from('app_users')
+          .insert({
+            id: newId,
+            auth_user_id: authUserId,
+            username: cleanUser,
+            password_hash: '[SUPABASE_AUTH]',
+            name: cleanName,
+            role: role || 'supervisor',
+            assigned_site_id: siteIdToAssign,
+            assigned_section_id: sectionIdToAssign,
+            mobile: mobile ? mobile.trim() : null,
+            email: userEmail,
+            status: 'active',
+          })
+          .select()
+          .single();
+        appUser = insertedP;
+        appUserErr = iErr;
+      }
 
       if (appUserErr) {
         return new Response(
