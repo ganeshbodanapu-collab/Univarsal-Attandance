@@ -263,7 +263,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     setIsScanning(true);
     setScanFeedback(`Extracting 3D facial landmarks for ${worker.name} (${attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'})...`);
 
-    let verifyResult: { matched: boolean; score: number; reason: string } = { matched: true, score: 85, reason: '' };
+    let verifyResult: { matched: boolean; score: number; reason: string } = { matched: false, score: 0, reason: 'Camera feed unavailable.' };
     if (videoRef.current) {
       const res = await verifyIndividualWorkerFace(videoRef.current, worker);
       verifyResult = { matched: res.matched, score: res.score, reason: res.reason || '' };
