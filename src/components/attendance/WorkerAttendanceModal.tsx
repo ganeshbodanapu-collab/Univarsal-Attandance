@@ -15,6 +15,8 @@ import {
   UserCheck,
   Building2,
   Wallet,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 
 export interface WorkerAttendanceModalProps {
@@ -172,6 +174,15 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     stopCamera();
   }, [worker, site, section, date, isOpen, initialTab, initialMode, defaultSiteAmountGiven]);
 
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  // Auto-start camera when active tab is face
+  useEffect(() => {
+    if (isOpen && activeTab === 'face') {
+      startCamera();
+    }
+  }, [isOpen, activeTab]);
+
   // Clean up camera stream on unmount or close
   useEffect(() => {
     return () => {
@@ -188,21 +199,26 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
   };
 
   const startCamera = async () => {
+    setCameraError(null);
     try {
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
       setShowLiveCamera(true);
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
       });
       mediaStreamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.play().catch(() => {});
       }
-    } catch {
-      // Fallback if camera access is unavailable or denied
+    } catch (err: any) {
       setShowLiveCamera(false);
-      handleUseDemoPhoto();
+      setCameraError(
+        'Camera permission denied or camera device unavailable. Please allow camera permissions in your browser.'
+      );
     }
   };
 
@@ -887,16 +903,61 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
         {/* TAB 2: FACE ID BIOMETRICS */}
         {activeTab === 'face' && (
           <div className="space-y-4 text-center">
-            <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 p-6 flex flex-col items-center justify-center min-h-[240px] text-white">
-              {/* Camera reticle overlay */}
-              <div className="absolute inset-4 border border-cyan-500/30 rounded-xl pointer-events-none" />
-              <div className="absolute top-4 left-4 w-4 h-4 border-t-2 border-l-2 border-cyan-400" />
-              <div className="absolute top-4 right-4 w-4 h-4 border-t-2 border-r-2 border-cyan-400" />
-              <div className="absolute bottom-4 left-4 w-4 h-4 border-b-2 border-l-2 border-cyan-400" />
-              <div className="absolute bottom-4 right-4 w-4 h-4 border-b-2 border-r-2 border-cyan-400" />
+            <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex flex-col items-center justify-center min-h-[260px] text-white">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`absolute inset-0 w-full h-full object-cover ${showLiveCamera ? 'block' : 'hidden'}`}
+              />
 
-              {isScanning ? (
-                <div className="space-y-3 flex flex-col items-center">
+              {/* Camera reticle overlay */}
+              <div className="absolute inset-4 border border-cyan-500/40 rounded-xl pointer-events-none z-10" />
+              <div className="absolute top-4 left-4 w-4 h-4 border-t-2 border-l-2 border-cyan-400 z-10" />
+              <div className="absolute top-4 right-4 w-4 h-4 border-t-2 border-r-2 border-cyan-400 z-10" />
+              <div className="absolute bottom-4 left-4 w-4 h-4 border-b-2 border-l-2 border-cyan-400 z-10" />
+              <div className="absolute bottom-4 right-4 w-4 h-4 border-b-2 border-r-2 border-cyan-400 z-10" />
+
+              {!showLiveCamera && !cameraError && (
+                <div className="space-y-3 flex flex-col items-center z-20 p-4">
+                  <div className="h-16 w-16 rounded-full bg-slate-800/80 border border-slate-700 flex items-center justify-center">
+                    <Camera className="h-8 w-8 text-cyan-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-200">Face Recognition Terminal</p>
+                    <p className="text-xs text-slate-400 mt-0.5 max-w-[260px]">
+                      Position {worker.name} facing the camera for instantaneous {attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'}.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={startCamera}
+                    className="px-4 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center space-x-1.5"
+                  >
+                    <Camera className="h-3.5 w-3.5" />
+                    <span>Start Camera</span>
+                  </button>
+                </div>
+              )}
+
+              {cameraError && (
+                <div className="space-y-3 flex flex-col items-center z-20 p-4">
+                  <AlertCircle className="h-10 w-10 text-rose-500" />
+                  <p className="text-xs text-rose-300 font-medium max-w-[240px]">{cameraError}</p>
+                  <button
+                    type="button"
+                    onClick={startCamera}
+                    className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center space-x-1.5"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    <span>Retry Camera Permission</span>
+                  </button>
+                </div>
+              )}
+
+              {isScanning && (
+                <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm flex flex-col items-center justify-center space-y-3 z-30">
                   <div className="relative">
                     <Scan className="h-16 w-16 text-cyan-400 animate-pulse" />
                     <div className="absolute inset-0 bg-cyan-500/20 rounded-full blur-xl" />
@@ -906,23 +967,13 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
                   </p>
                   <p className="text-[11px] text-slate-400">Verifying 3D facial landmarks for {worker.name}</p>
                 </div>
-              ) : scanFeedback ? (
-                <div className="space-y-2 flex flex-col items-center">
+              )}
+
+              {scanFeedback && !isScanning && (
+                <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center space-y-2 z-30 p-4">
                   <CheckCircle2 className="h-14 w-14 text-emerald-400 animate-bounce" />
                   <p className="text-sm font-bold text-emerald-300">{scanFeedback}</p>
                   <p className="text-xs text-slate-300">Marked as Present at {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                </div>
-              ) : (
-                <div className="space-y-3 flex flex-col items-center">
-                  <div className="h-16 w-16 rounded-full bg-slate-800/80 border border-slate-700 flex items-center justify-center">
-                    <Camera className="h-8 w-8 text-cyan-400" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-bold text-slate-200">Face Recognition Terminal Active</p>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Position {worker.name} facing the camera for instantaneous check-in.
-                    </p>
-                  </div>
                 </div>
               )}
             </div>
@@ -935,7 +986,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
                 className="px-6 py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-xl text-xs font-bold shadow-md shadow-cyan-600/20 transition-all active:scale-95 flex items-center space-x-2 cursor-pointer disabled:opacity-50"
               >
                 <Scan className="h-4 w-4" />
-                <span>{isScanning ? 'Scanning Face...' : 'Scan & Verify Face ID'}</span>
+                <span>{isScanning ? 'Scanning Face...' : `Scan & Verify Face ID (${attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'})`}</span>
               </button>
             </div>
           </div>
