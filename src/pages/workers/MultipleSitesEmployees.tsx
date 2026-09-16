@@ -5,7 +5,6 @@ import { WorkerSearchModal } from '../../components/workers/WorkerSearchModal';
 import { CustomSiteMigrationModal } from '../../components/workers/CustomSiteMigrationModal';
 import { WorkerMultiSiteSummaryModal } from '../../components/workers/WorkerMultiSiteSummaryModal';
 import { WorkerAttendanceModal } from '../../components/attendance/WorkerAttendanceModal';
-import { EnrollFaceModal } from '../../components/workers/EnrollFaceModal';
 import type { Worker } from '../../types';
 import {
   Users,
@@ -21,7 +20,6 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
-  Scan,
 } from 'lucide-react';
 
 export const MultipleSitesEmployees: React.FC = () => {
@@ -48,10 +46,6 @@ export const MultipleSitesEmployees: React.FC = () => {
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
   const [isRegularModalOpen, setIsRegularModalOpen] = useState(false);
   const [regularModalInitialTab, setRegularModalInitialTab] = useState<'manual' | 'face' | 'fingerprint'>('face');
-
-  // Face ID Enrollment state
-  const [selectedWorkerForFaceEnroll, setSelectedWorkerForFaceEnroll] = useState<Worker | null>(null);
-  const [isEnrollFaceModalOpen, setIsEnrollFaceModalOpen] = useState(false);
 
   // Employee Wise Table filter states
   const [employeeSearch, setEmployeeSearch] = useState('');
@@ -602,23 +596,6 @@ export const MultipleSitesEmployees: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => {
-                                setSelectedWorkerForFaceEnroll(emp.worker);
-                                setIsEnrollFaceModalOpen(true);
-                              }}
-                              className={`px-2 py-1 rounded-lg text-[10px] font-bold inline-flex items-center space-x-1 transition-colors cursor-pointer ${
-                                emp.worker.faceEnrolled
-                                  ? 'bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-300'
-                                  : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300'
-                              }`}
-                              title={emp.worker.faceEnrolled ? 'Re-Enroll Face ID' : 'Enroll Face ID'}
-                            >
-                              <Scan className="h-3 w-3 text-cyan-600" />
-                              <span>{emp.worker.faceEnrolled ? 'Re-Enroll Face' : 'Enroll Face'}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => {
                                 handleSelectWorker(emp.worker);
                                 setIsMigrationModalOpen(true);
                               }}
@@ -834,14 +811,6 @@ export const MultipleSitesEmployees: React.FC = () => {
           onSuccess={(workerName, message) => setToastMessage(`${workerName}: ${message}`)}
         />
       )}
-
-      {/* MODAL 5: Enroll Face ID Modal */}
-      <EnrollFaceModal
-        isOpen={isEnrollFaceModalOpen}
-        onClose={() => setIsEnrollFaceModalOpen(false)}
-        worker={selectedWorkerForFaceEnroll}
-        onEnrolledSuccess={(wId) => setToastMessage(`Face ID successfully enrolled for worker ${wId}`)}
-      />
 
       {/* Toast Notification */}
       {toastMessage && (

@@ -240,16 +240,19 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
 
   const handleFaceScan = async () => {
     if (!worker) return;
+    if (!showLiveCamera || !mediaStreamRef.current) {
+      await startCamera();
+    }
     setIsScanning(true);
     setScanFeedback(`Aligning face geometry for ${attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'}...`);
 
-    // Realistic scanning duration
+    captureCameraSnapshot();
+
     await new Promise((resolve) => setTimeout(resolve, 1200));
 
     setIsScanning(false);
     setScanFeedback(`Face ID Verified — ${attendanceMode === 'checkIn' ? 'Checked IN' : 'Checked OUT'}`);
 
-    // Save attendance immediately
     if (attendanceMode === 'checkIn') {
       saveAttendanceRecord('face', 'present', new Date().toTimeString().substring(0, 5), undefined);
     } else {

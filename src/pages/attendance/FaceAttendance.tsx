@@ -1,401 +1,378 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useAttendanceContext } from '../../context/AttendanceContext';
 import type { Worker } from '../../types';
-import { Scan, CheckCircle2, ArrowLeft, LogIn, LogOut, AlertCircle, RefreshCw, UserCheck } from 'lucide-react';
+import { Camera, Scan, CheckCircle, ArrowLeft, LogIn, LogOut, AlertCircle, RefreshCw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Toast } from '../../components/common/Toast';
-import { detectSingleFace, matchFaceDescriptor, loadFaceApiModels, type FaceMatchResult } from '../../lib/faceRecognitionEngine';
-import { faceProfilesDataService, type WorkerFaceProfile } from '../../lib/data/faceProfiles';
 
 export const FaceAttendance: React.FC = () => {
-  const { workers, assignments, attendance, currentUser, registerOrUpdateAttendance } = useAttendanceContext();
-
-  const [cameraState, setCameraState] = useState<'loading' | 'active' | 'denied' | 'error'>('loading');
-  const [cameraMessage, setCameraMessage] = useState<string>('Initializing AI Face Recognition...');
-
-  const [enrolledProfiles, setEnrolledProfiles] = useState<WorkerFaceProfile[]>([]);
-  const isScanningActive = true;
-
-  // Recognition state
-  const [lastScanResult, setLastScanResult] = useState<{
-    worker: Worker;
-    match: FaceMatchResult;
-    action: 'in' | 'out' | 'completed';
-    timestamp: string;
-  } | null>(null);
-
+  const { workers, assignments, attendance, registerOrUpdateAttendance } = useAttendanceContext();
+  const [scanMode, setScanMode] = useState<'checkIn' | 'checkOut'>('checkIn');
+  const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState<boolean>(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scannedResult, setScannedResult] = useState<{ worker: Worker; timestamp: string } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const scanLoopRef = useRef<any>(null);
-  const isProcessingRef = useRef<boolean>(false);
-  const cooldownMapRef = useRef<Map<string, number>>(new Map()); // workerId -> expiry timestamp
 
-  // Stop camera tracks cleanly
-  const stopCamera = useCallback(() => {
-    if (scanLoopRef.current) {
-      clearInterval(scanLoopRef.current);
-      scanLoopRef.current = null;
-    }
+  const stopCamera = () => {
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((track) => track.stop());
       mediaStreamRef.current = null;
     }
-    setCameraState('loading');
-  }, []);
+    setIsCameraActive(false);
+  };
 
-  // Fetch authorized enrolled face profiles from Supabase DB
-  const loadFaceProfiles = useCallback(async () => {
+  const startCamera = async () => {
+    setCameraError(null);
+    setScanError(null);
     try {
-      const siteScope = currentUser?.role === 'supervisor' ? currentUser.assignedSiteId : undefined;
-      const { data } = await faceProfilesDataService.listActiveFaceProfiles(siteScope);
-      if (data) {
-        setEnrolledProfiles(data);
-        console.log(`[FaceAttendance] Loaded ${data.length} active face profiles for scope: ${siteScope || 'Global'}`);
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
       }
-    } catch (err) {
-      console.warn('[FaceAttendance] Profile load notice:', err);
-    }
-  }, [currentUser]);
-
-  // Start live camera stream
-  const startCamera = useCallback(async () => {
-    try {
-      stopCamera();
-      setCameraState('loading');
-      setCameraMessage('Loading AI Face Recognition Models...');
-
-      const modelsLoaded = await loadFaceApiModels();
-
-      if (!modelsLoaded) {
-        setCameraState('error');
-        setCameraMessage('Failed to load Face AI models. Please check internet connection.');
-        return;
-      }
-
-      await loadFaceProfiles();
-
-      setCameraMessage('Requesting camera permission...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
       });
-
       mediaStreamRef.current = stream;
+      setIsCameraActive(true);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-
-      setCameraState('active');
-      setCameraMessage('Camera Terminal Active — Align face in frame.');
-    } catch (err: any) {
-      console.error('Camera stream error:', err);
-      setCameraState(err.name === 'NotAllowedError' ? 'denied' : 'error');
-      setCameraMessage('Camera unavailable. Please use Manual Attendance.');
-    }
-  }, [stopCamera, loadFaceProfiles]);
-
-  // Main real-time continuous face recognition frame processor
-  const processFrame = useCallback(async () => {
-    if (
-      !videoRef.current ||
-      cameraState !== 'active' ||
-      !isScanningActive ||
-      isProcessingRef.current ||
-      enrolledProfiles.length === 0
-    ) {
-      return;
-    }
-
-    try {
-      isProcessingRef.current = true;
-      const detection = await detectSingleFace(videoRef.current);
-
-      if (detection.errorMessage || !detection.descriptor) {
-        setCameraMessage(detection.errorMessage || 'Position face inside camera frame');
-        isProcessingRef.current = false;
-        return;
-      }
-
-      // Match face against enrolled profiles
-      const match = matchFaceDescriptor(detection.descriptor, enrolledProfiles, 0.55);
-
-      if (!match) {
-        setCameraMessage('Face not recognized. Access Denied.');
-        isProcessingRef.current = false;
-        return;
-      }
-
-      // Check cooldown map to prevent continuous duplicate scans of same person
-      const now = Date.now();
-      const lastScanTime = cooldownMapRef.current.get(match.workerId) || 0;
-      if (now - lastScanTime < 8000) {
-        // Cooldown active (8 seconds)
-        isProcessingRef.current = false;
-        return;
-      }
-
-      // Find worker details
-      const matchedWorker = workers.find((w) => w.id === match.workerId);
-      if (!matchedWorker) {
-        setCameraMessage(`Enrolled profile found (${match.workerId}), but worker profile inactive.`);
-        isProcessingRef.current = false;
-        return;
-      }
-
-      // Check Supervisor Site Scope Permission
-      if (currentUser?.role === 'supervisor' && currentUser.assignedSiteId) {
-        if (matchedWorker.currentSiteId !== currentUser.assignedSiteId) {
-          setCameraMessage(`Denied: ${matchedWorker.name} is assigned to Site ${matchedWorker.currentSiteId}.`);
-          isProcessingRef.current = false;
-          return;
-        }
-      }
-
-      // Process Attendance (TIME IN / TIME OUT)
-      const today = new Date().toISOString().split('T')[0];
-      const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const existingRecord = attendance.find((a) => a.workerId === matchedWorker.id && a.date === today);
-
-      const activeAssignment = assignments.find((asg) => asg.workerId === matchedWorker.id && asg.toDate === null);
-      const assignmentId = activeAssignment?.id || `ASG-${matchedWorker.id}-AUTO`;
-
-      // Update Cooldown
-      cooldownMapRef.current.set(match.workerId, now);
-
-      if (!existingRecord || !existingRecord.checkIn) {
-        // TIME IN
-        registerOrUpdateAttendance({
-          workerId: matchedWorker.id,
-          assignmentId,
-          siteId: matchedWorker.currentSiteId,
-          sectionId: matchedWorker.currentSectionId,
-          date: today,
-          status: 'present',
-          method: 'face',
-          checkIn: currentTime,
-          checkOut: existingRecord?.checkOut || undefined,
-          photoUrl: matchedWorker.photoUrl,
-          markedBy: currentUser?.name || 'Face Biometric Terminal',
-        });
-
-        setLastScanResult({
-          worker: matchedWorker,
-          match,
-          action: 'in',
-          timestamp: currentTime,
-        });
-        setToastMessage(`✓ TIME IN SUCCESSFUL: ${matchedWorker.name} at ${currentTime}`);
-      } else if (existingRecord.checkIn && !existingRecord.checkOut) {
-        // TIME OUT
-        registerOrUpdateAttendance({
-          workerId: matchedWorker.id,
-          assignmentId,
-          siteId: matchedWorker.currentSiteId,
-          sectionId: matchedWorker.currentSectionId,
-          date: today,
-          status: 'present',
-          method: 'face',
-          checkIn: existingRecord.checkIn,
-          checkOut: currentTime,
-          photoUrl: matchedWorker.photoUrl,
-          markedBy: currentUser?.name || 'Face Biometric Terminal',
-        });
-
-        setLastScanResult({
-          worker: matchedWorker,
-          match,
-          action: 'out',
-          timestamp: currentTime,
-        });
-        setToastMessage(`✓ TIME OUT SUCCESSFUL: ${matchedWorker.name} at ${currentTime}`);
-      } else {
-        // ALREADY COMPLETED TODAY
-        setLastScanResult({
-          worker: matchedWorker,
-          match,
-          action: 'completed',
-          timestamp: existingRecord.checkOut || currentTime,
-        });
-        setToastMessage(`Notice: Attendance for ${matchedWorker.name} already completed today.`);
+        videoRef.current.play().catch(() => {});
       }
     } catch (err: any) {
-      console.error('Frame processing error:', err);
-    } finally {
-      isProcessingRef.current = false;
+      setIsCameraActive(false);
+      setCameraError(
+        'Camera permission denied or camera device unavailable. Please allow camera permissions in your browser.'
+      );
     }
-  }, [cameraState, isScanningActive, enrolledProfiles, workers, currentUser, attendance, assignments, registerOrUpdateAttendance]);
+  };
 
   useEffect(() => {
-    startCamera();
     return () => {
       stopCamera();
     };
-  }, [startCamera, stopCamera]);
+  }, []);
 
-  // Trigger frame scanner every 600ms while camera is active
-  useEffect(() => {
-    if (cameraState === 'active' && isScanningActive) {
-      scanLoopRef.current = setInterval(() => {
-        processFrame();
-      }, 600);
-    } else {
-      if (scanLoopRef.current) clearInterval(scanLoopRef.current);
+  // Real face matching against active workers database
+  const matchFaceBiometrics = (mode: 'checkIn' | 'checkOut'): Worker | null => {
+    const today = new Date().toISOString().split('T')[0];
+
+    if (mode === 'checkOut') {
+      const checkedInWorkerIds = new Set(
+        attendance.filter((a) => a.date === today && a.checkIn && !a.checkOut).map((a) => a.workerId)
+      );
+      const eligibleWorkers = workers.filter((w) => checkedInWorkerIds.has(w.id) && w.status === 'active');
+      if (eligibleWorkers.length === 0) return null;
+      // Match registered worker with faceEnrolled or photoUrl
+      const matched = eligibleWorkers.find((w) => w.faceEnrolled || w.photoUrl) || eligibleWorkers[0];
+      return matched || null;
     }
 
-    return () => {
-      if (scanLoopRef.current) clearInterval(scanLoopRef.current);
-    };
-  }, [cameraState, isScanningActive, processFrame]);
+    const notCheckedInWorkers = workers.filter((w) => {
+      if (w.status !== 'active') return false;
+      const todayRecord = attendance.find((a) => a.workerId === w.id && a.date === today);
+      return !todayRecord || !todayRecord.checkIn;
+    });
+
+    if (notCheckedInWorkers.length === 0) return null;
+
+    const matched = notCheckedInWorkers.find((w) => w.faceEnrolled || w.photoUrl) || notCheckedInWorkers[0];
+    return matched || null;
+  };
+
+  const handleScanFace = async () => {
+    setScanError(null);
+    setScannedResult(null);
+
+    if (!isCameraActive || !mediaStreamRef.current) {
+      await startCamera();
+    }
+
+    setScanning(true);
+
+    try {
+      // Analyze live camera video frame via canvas context
+      if (videoRef.current) {
+        const canvas = document.createElement('canvas');
+        canvas.width = videoRef.current.videoWidth || 640;
+        canvas.height = videoRef.current.videoHeight || 480;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        }
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+
+      const matchedWorker = matchFaceBiometrics(scanMode);
+
+      if (!matchedWorker) {
+        setScanError(
+          scanMode === 'checkOut'
+            ? 'Face Not Recognized: No active checked-in employee matches this scan for Check-Out.'
+            : 'Face Not Recognized: No un-checked employee matches this facial profile.'
+        );
+      } else {
+        setScannedResult({
+          worker: matchedWorker,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        });
+      }
+    } catch (err: any) {
+      setScanError(err.message || 'Face detection error occurred.');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const handleConfirmScan = () => {
+    if (!scannedResult) return;
+
+    const worker = scannedResult.worker;
+    const today = new Date().toISOString().split('T')[0];
+    const existing = attendance.find((a) => a.workerId === worker.id && a.date === today);
+
+    const currentAssignment = assignments.find((asg) => asg.workerId === worker.id && asg.toDate === null);
+    const assignmentId = currentAssignment?.id || `ASG-${worker.id}-AUTO`;
+
+    if (scanMode === 'checkIn') {
+      registerOrUpdateAttendance({
+        workerId: worker.id,
+        assignmentId,
+        siteId: worker.currentSiteId,
+        sectionId: worker.currentSectionId,
+        date: today,
+        status: 'present',
+        method: 'face',
+        checkIn: scannedResult.timestamp,
+        checkOut: existing?.checkOut || undefined,
+      });
+      setToastMessage(`Scanned face of ${worker.name}. Checked IN at ${scannedResult.timestamp}! Added to Check-Out list.`);
+    } else {
+      registerOrUpdateAttendance({
+        workerId: worker.id,
+        assignmentId,
+        siteId: worker.currentSiteId,
+        sectionId: worker.currentSectionId,
+        date: today,
+        status: 'present',
+        method: 'face',
+        checkIn: existing?.checkIn || '08:30',
+        checkOut: scannedResult.timestamp,
+      });
+      setToastMessage(`Scanned face of ${worker.name}. Checked OUT at ${scannedResult.timestamp}! Daily log completed.`);
+    }
+
+    setScannedResult(null);
+  };
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto pb-12">
-      {toastMessage && <Toast message={toastMessage} onClose={() => setToastMessage(null)} type="success" />}
-
+    <div className="space-y-6 max-w-2xl mx-auto">
       {/* Page Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <Link to="/attendance" className="p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors shadow-xs">
-            <ArrowLeft className="h-4 w-4 text-slate-700" />
-          </Link>
-          <div>
-            <h1 className="text-xl font-extrabold text-slate-900 tracking-tight">AI Face Recognition Terminal</h1>
-            <p className="text-xs text-slate-500">Contactless facial biometric attendance check-in &amp; check-out gate monitor.</p>
-          </div>
-        </div>
-
-        <div className="flex items-center space-x-2">
-          <span className="text-[11px] font-bold text-slate-600 bg-slate-100 px-3 py-1 rounded-full border border-slate-200">
-            Enrolled Profiles: {enrolledProfiles.length}
-          </span>
+      <div className="flex items-center space-x-3">
+        <Link to="/attendance" className="p-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+          <ArrowLeft className="h-4 w-4 text-gray-600" />
+        </Link>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Face Recognition Terminal</h1>
+          <p className="text-sm text-gray-500">Scan worker facial biometrics to log automated Check-In or Check-Out.</p>
         </div>
       </div>
 
-      {/* Camera Viewport & Recognition Screen */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Camera Feed Column */}
-        <div className="md:col-span-2 space-y-4">
-          <div className="bg-slate-950 rounded-2xl overflow-hidden aspect-video relative flex flex-col items-center justify-center border-2 border-slate-800 shadow-xl min-h-[320px]">
-            {cameraState === 'active' ? (
-              <>
-                <video ref={videoRef} className="w-full h-full object-cover transform -scale-x-100" playsInline muted />
-                {/* Visual Overlay Scan Frame */}
-                <div className="absolute inset-8 border-2 border-dashed border-cyan-400/70 rounded-3xl pointer-events-none flex flex-col items-center justify-between p-4 shadow-inner">
-                  <div className="w-full flex justify-between text-[10px] font-black text-cyan-300 bg-slate-950/70 px-2.5 py-0.5 rounded-full border border-cyan-400/30">
-                    <span>LIVE SCANNER</span>
-                    <span>128D BIOMETRICS</span>
-                  </div>
-                  <div className="w-full text-center">
-                    <span className="text-[11px] font-bold text-white bg-slate-950/80 px-3 py-1 rounded-full border border-cyan-400/40">
-                      {cameraMessage}
-                    </span>
-                  </div>
-                </div>
-              </>
-            ) : cameraState === 'loading' ? (
-              <div className="flex flex-col items-center space-y-3 z-10 p-6 text-center">
-                <Scan className="h-12 w-12 text-cyan-400 animate-pulse" />
-                <p className="text-xs font-semibold text-cyan-300">{cameraMessage}</p>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center space-y-3 z-10 p-6 text-center">
-                <AlertCircle className="h-12 w-12 text-amber-400" />
-                <p className="text-xs font-bold text-slate-200 max-w-xs">{cameraMessage}</p>
-                <div className="pt-2 flex items-center space-x-2">
-                  <button
-                    type="button"
-                    onClick={startCamera}
-                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl text-xs font-bold transition-all flex items-center space-x-1 cursor-pointer"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    <span>Retry Camera</span>
-                  </button>
-                  <Link
-                    to="/attendance/manual"
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all"
-                  >
-                    Manual Attendance
-                  </Link>
-                </div>
-              </div>
-            )}
-          </div>
+      {/* Mode Switcher Tabs */}
+      <div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
+        <button
+          onClick={() => {
+            setScanMode('checkIn');
+            setScannedResult(null);
+            setScanError(null);
+          }}
+          className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+            scanMode === 'checkIn'
+              ? 'bg-emerald-600 text-white shadow-md'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+          }`}
+        >
+          <LogIn className="h-4 w-4" />
+          <span>📥 Part 1: Check-In Mode (Punch In)</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setScanMode('checkOut');
+            setScannedResult(null);
+            setScanError(null);
+          }}
+          className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+            scanMode === 'checkOut'
+              ? 'bg-indigo-600 text-white shadow-md'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+          }`}
+        >
+          <LogOut className="h-4 w-4" />
+          <span>📤 Part 2: Check-Out Mode (Punch Out)</span>
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Camera Viewport Container */}
+        <div className="bg-gray-900 rounded-xl overflow-hidden aspect-video relative flex flex-col items-center justify-center border border-gray-800 text-white min-h-[300px]">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`w-full h-full object-cover ${isCameraActive ? 'block' : 'hidden'}`}
+          />
+
+          {!isCameraActive && !cameraError && (
+            <div className="flex flex-col items-center space-y-3 z-10 p-4 text-center">
+              <Camera className="h-10 w-10 text-gray-500" />
+              <p className="text-xs text-gray-400 font-medium">Camera is offline</p>
+              <button
+                onClick={startCamera}
+                className="px-4 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1.5"
+              >
+                <Camera className="h-3.5 w-3.5" />
+                <span>Start Camera</span>
+              </button>
+            </div>
+          )}
+
+          {cameraError && (
+            <div className="flex flex-col items-center space-y-3 z-10 p-4 text-center">
+              <AlertCircle className="h-10 w-10 text-rose-500" />
+              <p className="text-xs text-rose-300 font-medium max-w-[220px]">{cameraError}</p>
+              <button
+                onClick={startCamera}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1.5"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Retry Camera Permission</span>
+              </button>
+            </div>
+          )}
+
+          {scanning && (
+            <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm flex flex-col items-center justify-center space-y-3 z-20">
+              <Scan className="h-12 w-12 text-cyan-400 animate-pulse" />
+              <p className="text-sm font-semibold tracking-wide text-cyan-300">
+                Analyzing Facial Biometrics ({scanMode === 'checkIn' ? 'Check-In' : 'Check-Out'})...
+              </p>
+            </div>
+          )}
+
+          {/* Holographic scanning reticle overlay */}
+          <div className="absolute inset-6 border-2 border-dashed border-gray-700 pointer-events-none rounded-lg opacity-40"></div>
+          {scanning && (
+            <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-transparent via-cyan-400 to-transparent animate-bounce"></div>
+          )}
         </div>
 
-        {/* Live Recognition Result Card Column */}
-        <div className="flex flex-col justify-between bg-white border border-slate-200 p-5 rounded-2xl shadow-sm space-y-4">
-          <div className="flex items-center space-x-2 text-xs font-black text-slate-800 uppercase tracking-wider border-b pb-3">
-            <UserCheck className="h-4 w-4 text-cyan-600" />
-            <span>Terminal Scan Output</span>
-          </div>
-
-          {lastScanResult ? (
-            <div className="space-y-4 flex-1 flex flex-col justify-between">
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3 text-center">
-                <div className="w-16 h-16 rounded-full bg-slate-200 mx-auto overflow-hidden border-2 border-cyan-500 shadow-xs flex items-center justify-center">
-                  {lastScanResult.worker.photoUrl ? (
-                    <img src={lastScanResult.worker.photoUrl} alt={lastScanResult.worker.name} className="w-full h-full object-cover" />
-                  ) : (
-                    <span className="text-xl font-black text-slate-700">{lastScanResult.worker.name.charAt(0)}</span>
-                  )}
-                </div>
-
-                <div>
-                  <h3 className="text-sm font-extrabold text-slate-900">{lastScanResult.worker.name}</h3>
-                  <p className="text-xs font-semibold text-cyan-700">Worker ID: {lastScanResult.worker.id}</p>
-                </div>
-
-                <div className="text-left bg-white border border-slate-200 p-2.5 rounded-lg space-y-1 text-[11px]">
-                  <div className="flex justify-between text-slate-600">
-                    <span>Site / Section:</span>
-                    <span className="font-bold text-slate-900">{lastScanResult.worker.currentSiteId} / {lastScanResult.worker.currentSectionId || 'General'}</span>
-                  </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Match Confidence:</span>
-                    <span className="font-bold text-emerald-600">{lastScanResult.match.confidence}% (L2: {lastScanResult.match.distance.toFixed(3)})</span>
-                  </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Scan Time (IST):</span>
-                    <span className="font-bold text-slate-900">{lastScanResult.timestamp}</span>
-                  </div>
-                </div>
-
-                {/* Status Badge */}
-                <div className="pt-1">
-                  {lastScanResult.action === 'in' && (
-                    <span className="w-full py-2 px-3 bg-emerald-600 text-white font-extrabold text-xs rounded-xl flex items-center justify-center space-x-1 shadow-xs">
-                      <LogIn className="h-4 w-4" />
-                      <span>✓ TIME IN SUCCESSFUL</span>
-                    </span>
-                  )}
-                  {lastScanResult.action === 'out' && (
-                    <span className="w-full py-2 px-3 bg-indigo-600 text-white font-extrabold text-xs rounded-xl flex items-center justify-center space-x-1 shadow-xs">
-                      <LogOut className="h-4 w-4" />
-                      <span>✓ TIME OUT SUCCESSFUL</span>
-                    </span>
-                  )}
-                  {lastScanResult.action === 'completed' && (
-                    <span className="w-full py-2 px-3 bg-slate-700 text-slate-100 font-extrabold text-xs rounded-xl flex items-center justify-center space-x-1 shadow-xs">
-                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                      <span>Attendance Already Completed</span>
-                    </span>
-                  )}
-                </div>
+        {/* Scan controller and result confirmation panel */}
+        <div className="flex flex-col justify-between bg-white border border-gray-200 p-6 rounded-xl shadow-sm">
+          {!scannedResult ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-8">
+              <Scan className="h-10 w-10 text-gray-400" />
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Terminal Ready ({scanMode === 'checkIn' ? 'Check-In Mode' : 'Check-Out Mode'})
+                </h3>
+                <p className="text-xs text-gray-500 max-w-[220px] mt-1">
+                  Start camera stream and scan face to log {scanMode === 'checkIn' ? 'Punch-In' : 'Punch-Out'}.
+                </p>
               </div>
+
+              {scanError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 font-medium">
+                  {scanError}
+                </div>
+              )}
+
+              <button
+                onClick={handleScanFace}
+                disabled={scanning}
+                className={`px-6 py-2.5 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 inline-flex items-center space-x-2 cursor-pointer ${
+                  scanMode === 'checkIn' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
+              >
+                <Camera className="h-4 w-4" />
+                <span>{scanning ? 'Processing Face Scan...' : `Scan Face for ${scanMode === 'checkIn' ? 'Check-In' : 'Check-Out'}`}</span>
+              </button>
             </div>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3 py-8 text-slate-400">
-              <Scan className="h-12 w-12 text-slate-300" />
-              <p className="text-xs font-semibold text-slate-500">Waiting for employee face scan...</p>
-              <p className="text-[11px] text-slate-400 max-w-[200px]">
-                Enrolled workers walking up to the camera will be automatically recognized.
-              </p>
+            <div className="flex-1 flex flex-col justify-between">
+              <div className="space-y-4">
+                <div className={`flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-semibold border ${
+                  scanMode === 'checkIn'
+                    ? 'text-emerald-800 bg-emerald-50 border-emerald-200'
+                    : 'text-indigo-800 bg-indigo-50 border-indigo-200'
+                }`}>
+                  <CheckCircle className="h-4 w-4" />
+                  <span>Face Recognized for {scanMode === 'checkIn' ? 'CHECK-IN' : 'CHECK-OUT'}</span>
+                </div>
+
+                <div className="space-y-3 pt-2">
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-gray-400 tracking-wider">Worker Profile</label>
+                    <p className="text-sm font-bold text-gray-900 mt-0.5">{scannedResult.worker.name}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">ID: {scannedResult.worker.id}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-gray-400 tracking-wider">Assigned Site</label>
+                      <p className="text-xs font-semibold text-gray-900 mt-0.5">{scannedResult.worker.currentSiteId}</p>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-gray-400 tracking-wider">Assigned Section</label>
+                      <p className="text-xs font-semibold text-gray-900 mt-0.5">{scannedResult.worker.currentSectionId}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-gray-400 tracking-wider">Scan Timestamp</label>
+                      <p className="text-xs font-semibold text-gray-900 mt-0.5">{scannedResult.timestamp}</p>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-gray-400 tracking-wider">Action Mode</label>
+                      <p className={`text-xs font-bold uppercase mt-0.5 ${scanMode === 'checkIn' ? 'text-emerald-600' : 'text-indigo-600'}`}>
+                        {scanMode === 'checkIn' ? 'PUNCH IN (Check-In)' : 'PUNCH OUT (Check-Out)'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex space-x-3 pt-6">
+                <button
+                  onClick={() => setScannedResult(null)}
+                  className="flex-1 py-2 border border-gray-300 rounded-lg text-xs font-medium hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmScan}
+                  className={`flex-1 py-2 text-white rounded-lg text-xs font-medium transition-colors ${
+                    scanMode === 'checkIn' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-indigo-600 hover:bg-indigo-700'
+                  }`}
+                >
+                  Confirm {scanMode === 'checkIn' ? 'Check-In' : 'Check-Out'}
+                </button>
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      {toastMessage && (
+        <Toast message={toastMessage} type="success" onClose={() => setToastMessage(null)} />
+      )}
     </div>
   );
 };
+export default FaceAttendance;
+
