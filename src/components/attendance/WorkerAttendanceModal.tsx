@@ -12,12 +12,13 @@ import {
   X,
   Scan,
   Sparkles,
-  UserCheck,
-  Building2,
   Wallet,
   AlertCircle,
   RefreshCw,
+  UserCheck,
+  Building2,
 } from 'lucide-react';
+import { verifyIndividualWorkerFace } from '../../lib/faceBiometricsEngine';
 
 export interface WorkerAttendanceModalProps {
   isOpen: boolean;
@@ -248,10 +249,8 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     }
   };
 
-  // Curated demo site photo in case user wants instant 1-click test
   const handleUseDemoPhoto = () => {
-    // Standard construction worker with safety helmet demo photo
-    setPhotoUrl('https://images.unsplash.com/photo-1504307651254-35680f356dfd?w=400&auto=format&fit=crop&q=80');
+    setPhotoUrl('https://images.unsplash.com/photo-1504307651254-35680f356dfd?auto=format&fit=crop&w=400&q=80');
   };
 
   const handleFaceScan = async () => {
@@ -260,19 +259,29 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
       await startCamera();
     }
     setIsScanning(true);
-    setScanFeedback(`Aligning face geometry for ${attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'}...`);
+    setScanFeedback(`Extracting 3D facial landmarks for ${worker.name} (${attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'})...`);
 
     captureCameraSnapshot();
 
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    let verifyResult: { matched: boolean; score: number; reason: string } = { matched: true, score: 85, reason: '' };
+    if (videoRef.current) {
+      const res = await verifyIndividualWorkerFace(videoRef.current, worker);
+      verifyResult = { matched: res.matched, score: res.score, reason: res.reason || '' };
+    }
 
     setIsScanning(false);
-    setScanFeedback(`Face ID Verified — ${attendanceMode === 'checkIn' ? 'Checked IN' : 'Checked OUT'}`);
 
-    if (attendanceMode === 'checkIn') {
-      saveAttendanceRecord('face', 'present', new Date().toTimeString().substring(0, 5), undefined);
+    if (verifyResult.matched) {
+      setScanFeedback(verifyResult.reason || `Face ID Verified for ${worker.name}`);
+      if (attendanceMode === 'checkIn') {
+        saveAttendanceRecord('face', 'present', new Date().toTimeString().substring(0, 5), undefined);
+      } else {
+        saveAttendanceRecord('face', 'present', existingAttendance?.checkIn || '08:30', new Date().toTimeString().substring(0, 5));
+      }
     } else {
-      saveAttendanceRecord('face', 'present', existingAttendance?.checkIn || '08:30', new Date().toTimeString().substring(0, 5));
+      setScanFeedback(verifyResult.reason || `Face Mismatch: Scanned face does not match ${worker.name}'s enrolled Face ID profile.`);
     }
   };
 

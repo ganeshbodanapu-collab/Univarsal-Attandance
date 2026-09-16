@@ -4,6 +4,7 @@ import type { Worker } from '../../types';
 import { Camera, Scan, CheckCircle, ArrowLeft, LogIn, LogOut, AlertCircle, RefreshCw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Toast } from '../../components/common/Toast';
+import { identifyIndividualWorkerFromFace } from '../../lib/faceBiometricsEngine';
 
 export const FaceAttendance: React.FC = () => {
   const { workers, assignments, attendance, registerOrUpdateAttendance } = useAttendanceContext();
@@ -57,33 +58,6 @@ export const FaceAttendance: React.FC = () => {
     };
   }, []);
 
-  // Real face matching against active workers database
-  const matchFaceBiometrics = (mode: 'checkIn' | 'checkOut'): Worker | null => {
-    const today = new Date().toISOString().split('T')[0];
-
-    if (mode === 'checkOut') {
-      const checkedInWorkerIds = new Set(
-        attendance.filter((a) => a.date === today && a.checkIn && !a.checkOut).map((a) => a.workerId)
-      );
-      const eligibleWorkers = workers.filter((w) => checkedInWorkerIds.has(w.id) && w.status === 'active');
-      if (eligibleWorkers.length === 0) return null;
-      // Match registered worker with faceEnrolled or photoUrl
-      const matched = eligibleWorkers.find((w) => w.faceEnrolled || w.photoUrl) || eligibleWorkers[0];
-      return matched || null;
-    }
-
-    const notCheckedInWorkers = workers.filter((w) => {
-      if (w.status !== 'active') return false;
-      const todayRecord = attendance.find((a) => a.workerId === w.id && a.date === today);
-      return !todayRecord || !todayRecord.checkIn;
-    });
-
-    if (notCheckedInWorkers.length === 0) return null;
-
-    const matched = notCheckedInWorkers.find((w) => w.faceEnrolled || w.photoUrl) || notCheckedInWorkers[0];
-    return matched || null;
-  };
-
   const handleScanFace = async () => {
     setScanError(null);
     setScannedResult(null);
@@ -95,30 +69,43 @@ export const FaceAttendance: React.FC = () => {
     setScanning(true);
 
     try {
-      // Analyze live camera video frame via canvas context
-      if (videoRef.current) {
-        const canvas = document.createElement('canvas');
-        canvas.width = videoRef.current.videoWidth || 640;
-        canvas.height = videoRef.current.videoHeight || 480;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-        }
+      const today = new Date().toISOString().split('T')[0];
+      let candidateWorkers: Worker[] = [];
+
+      if (scanMode === 'checkOut') {
+        const checkedInWorkerIds = new Set(
+          attendance.filter((a) => a.date === today && a.checkIn && !a.checkOut).map((a) => a.workerId)
+        );
+        candidateWorkers = workers.filter((w) => checkedInWorkerIds.has(w.id) && w.status === 'active');
+      } else {
+        candidateWorkers = workers.filter((w) => {
+          if (w.status !== 'active') return false;
+          const todayRecord = attendance.find((a) => a.workerId === w.id && a.date === today);
+          return !todayRecord || !todayRecord.checkIn;
+        });
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+      await new Promise((resolve) => setTimeout(resolve, 800));
 
-      const matchedWorker = matchFaceBiometrics(scanMode);
+      let identifyResult: { matchedWorker: Worker | null; score: number; reason?: string } = {
+        matchedWorker: null,
+        score: 0,
+      };
 
-      if (!matchedWorker) {
+      if (videoRef.current && candidateWorkers.length > 0) {
+        identifyResult = await identifyIndividualWorkerFromFace(videoRef.current, candidateWorkers);
+      }
+
+      if (!identifyResult.matchedWorker) {
         setScanError(
-          scanMode === 'checkOut'
-            ? 'Face Not Recognized: No active checked-in employee matches this scan for Check-Out.'
-            : 'Face Not Recognized: No un-checked employee matches this facial profile.'
+          identifyResult.reason ||
+            (scanMode === 'checkOut'
+              ? 'Face Not Recognized: No active checked-in employee matches this scan for Check-Out.'
+              : 'Face Not Recognized: Scanned face does not match any enrolled employee profile.')
         );
       } else {
         setScannedResult({
-          worker: matchedWorker,
+          worker: identifyResult.matchedWorker,
           timestamp: new Date().toTimeString().substring(0, 5),
         });
       }
