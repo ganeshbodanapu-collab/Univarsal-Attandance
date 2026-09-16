@@ -239,7 +239,37 @@ export const NewEmployeeJoiningModal: React.FC<NewEmployeeJoiningModalProps> = (
 
   const handleEnrollFace = async () => {
     setIsEnrollingFace(true);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      setShowLiveCamera(true);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false,
+      });
+      mediaStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+    } catch {
+      setShowLiveCamera(false);
+      setIsEnrollingFace(false);
+      alert('Camera permission denied or camera device unavailable. Please allow camera permissions in your browser to enroll Face ID.');
+    }
+  };
+
+  const handleConfirmFaceEnrollment = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setPhotoUrl(dataUrl);
+      }
+    }
+    stopCamera();
     setIsEnrollingFace(false);
     setFaceEnrolled(true);
   };
@@ -937,15 +967,46 @@ export const NewEmployeeJoiningModal: React.FC<NewEmployeeJoiningModalProps> = (
               <p className="text-[11px] text-slate-500 mb-3">
                 Captures 3D facial landmarks for contactless check-in at construction gate terminals.
               </p>
-              <button
-                type="button"
-                onClick={handleEnrollFace}
-                disabled={isEnrollingFace}
-                className="w-full py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-1.5 cursor-pointer active:scale-95 disabled:opacity-50 shadow-xs"
-              >
-                <Scan className="h-3.5 w-3.5" />
-                <span>{isEnrollingFace ? 'Scanning Face...' : faceEnrolled ? 'Re-Enroll Face ID' : 'Enroll Face ID'}</span>
-              </button>
+
+              {isEnrollingFace && showLiveCamera && (
+                <div className="my-3 space-y-2">
+                  <div className="relative rounded-xl overflow-hidden aspect-video bg-slate-950 border border-cyan-500">
+                    <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                    <div className="absolute inset-2 border border-cyan-400/40 rounded-lg pointer-events-none animate-pulse" />
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={handleConfirmFaceEnrollment}
+                      className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all flex items-center justify-center space-x-1 cursor-pointer"
+                    >
+                      <Camera className="h-3.5 w-3.5" />
+                      <span>Capture &amp; Save Face</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        stopCamera();
+                        setIsEnrollingFace(false);
+                      }}
+                      className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold transition-all cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {!isEnrollingFace && (
+                <button
+                  type="button"
+                  onClick={handleEnrollFace}
+                  className="w-full py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-1.5 cursor-pointer active:scale-95 shadow-xs"
+                >
+                  <Scan className="h-3.5 w-3.5" />
+                  <span>{faceEnrolled ? 'Re-Enroll Face ID' : 'Enroll Face ID'}</span>
+                </button>
+              )}
             </div>
 
             {/* Fingerprint Box */}
