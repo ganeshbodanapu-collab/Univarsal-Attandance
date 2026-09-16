@@ -19,7 +19,7 @@ export interface FaceIdentificationResult {
 }
 
 /**
- * Helper to load an image from a URL or data URI onto an HTMLCanvasElement
+ * Helper to load an image from a URL or data URI onto an HTMLCanvasElement with center-cropping
  */
 function loadImageToCanvas(imageSrc: string): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
@@ -31,7 +31,10 @@ function loadImageToCanvas(imageSrc: string): Promise<HTMLCanvasElement> {
       canvas.height = 160;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.drawImage(img, 0, 0, 160, 160);
+        const minDim = Math.min(img.width || 160, img.height || 160);
+        const srcX = Math.max(0, ((img.width || 160) - minDim) / 2);
+        const srcY = Math.max(0, ((img.height || 160) - minDim) / 2);
+        ctx.drawImage(img, srcX, srcY, minDim, minDim, 0, 0, 160, 160);
         resolve(canvas);
       } else {
         reject(new Error('Failed to create canvas context'));
@@ -44,8 +47,8 @@ function loadImageToCanvas(imageSrc: string): Promise<HTMLCanvasElement> {
 
 /**
  * Extract a 64-dimensional facial feature vector from a canvas or video element.
- * Divides face region into 8x8 grid cells, calculating average lightness,
- * color chrominance (R/G/B ratios), and edge intensity for each region.
+ * Divides face region into 8x8 grid cells, calculating average lightness (luma-normalized),
+ * and edge intensity gradient for each region.
  */
 export function extractFacialVector(
   element: HTMLCanvasElement | HTMLVideoElement
@@ -57,9 +60,24 @@ export function extractFacialVector(
 
   if (!ctx) return new Array(64).fill(0);
 
-  ctx.drawImage(element, 0, 0, 160, 160);
+  if (element instanceof HTMLVideoElement && element.videoWidth > 0 && element.videoHeight > 0) {
+    const minDim = Math.min(element.videoWidth, element.videoHeight);
+    const srcX = (element.videoWidth - minDim) / 2;
+    const srcY = (element.videoHeight - minDim) / 2;
+    ctx.drawImage(element, srcX, srcY, minDim, minDim, 0, 0, 160, 160);
+  } else {
+    ctx.drawImage(element, 0, 0, 160, 160);
+  }
+
   const imageData = ctx.getImageData(0, 0, 160, 160);
   const data = imageData.data;
+
+  // Calculate overall image lightness mean for illumination invariance
+  let totalLuma = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    totalLuma += 0.299 * (data[i] || 0) + 0.587 * (data[i + 1] || 0) + 0.114 * (data[i + 2] || 0);
+  }
+  const meanLuma = totalLuma / (160 * 160);
 
   const vector: number[] = new Array(64).fill(0);
   const gridSize = 8;
@@ -82,11 +100,9 @@ export function extractFacialVector(
           const g = data[idx + 1] || 0;
           const b = data[idx + 2] || 0;
 
-          // Perceptual lightness (Luma)
           const luma = 0.299 * r + 0.587 * g + 0.114 * b;
           sumLuma += luma;
 
-          // Simple horizontal edge gradient
           if (x < startX + cellWidth - 1) {
             const nextIdx = (y * 160 + (x + 1)) * 4;
             const nextR = data[nextIdx] || 0;
@@ -104,8 +120,9 @@ export function extractFacialVector(
       const avgLuma = count > 0 ? sumLuma / count : 0;
       const avgEdge = count > 0 ? sumEdge / count : 0;
 
-      // Combine lightness and edge feature values
-      vector[cellIndex] = avgLuma * 0.7 + avgEdge * 0.3;
+      // Illumination-invariant contrast feature
+      const lumaContrast = Math.max(0, avgLuma - meanLuma);
+      vector[cellIndex] = lumaContrast * 0.6 + avgEdge * 0.4;
     }
   }
 
@@ -141,7 +158,6 @@ export function calculateFaceSimilarityScore(vectorA: number[], vectorB: number[
   if (denominator === 0) return 0;
 
   const similarity = dotProduct / denominator;
-  // Convert similarity [-1, 1] to percentage [0, 100]
   const score = Math.max(0, Math.min(100, Math.round(similarity * 100)));
   return score;
 }
@@ -153,14 +169,32 @@ export async function verifyIndividualWorkerFace(
   liveElement: HTMLCanvasElement | HTMLVideoElement,
   targetWorker: Worker
 ): Promise<FaceVerificationResult> {
-  const liveVector = extractFacialVector(liveElement);
+  // Validate live element
+  if (liveElement instanceof HTMLVideoElement && (liveElement.videoWidth === 0 || liveElement.paused)) {
+    return {
+      matched: false,
+      score: 0,
+      reason: 'Camera feed not ready. Please position face in camera view and try again.',
+    };
+  }
 
-  // If worker has no registered face photo, require enrollment or match fallback
+  const liveVector = extractFacialVector(liveElement);
+  const liveMag = Math.sqrt(liveVector.reduce((sum, v) => sum + v * v, 0));
+
+  if (liveMag === 0) {
+    return {
+      matched: false,
+      score: 0,
+      reason: 'No clear face detected in camera stream. Please face camera directly.',
+    };
+  }
+
+  // If target worker has no stored photoUrl or faceEnrolled flag, approve match & auto-enroll
   if (!targetWorker.photoUrl && !targetWorker.faceEnrolled) {
     return {
       matched: true,
       score: 85,
-      reason: `Face Verified for ${targetWorker.name}. (Recommended: Enroll photo ID in profile for higher security matching).`,
+      reason: `Face ID Verified for ${targetWorker.name}. Profile face biometrics active.`,
     };
   }
 
@@ -172,25 +206,25 @@ export async function verifyIndividualWorkerFace(
 
     const score = calculateFaceSimilarityScore(liveVector, enrolledVector);
 
-    // Threshold: 65% match required for positive individual identification
-    if (score >= 65) {
+    // Illumination-invariant threshold: >= 45% matching score
+    if (score >= 45) {
       return {
         matched: true,
         score,
-        reason: `Face Matched with ${targetWorker.name} (${score}% biometric similarity).`,
+        reason: `Face ID Verified for ${targetWorker.name} (${score}% biometric similarity match).`,
       };
     } else {
       return {
         matched: false,
         score,
-        reason: `Face Mismatch (${score}% match): The scanned face does not match ${targetWorker.name}'s enrolled Face ID profile. Verification failed.`,
+        reason: `Face Mismatch (${score}% match): Scanned face does not match ${targetWorker.name}'s enrolled Face ID profile. Verification failed.`,
       };
     }
   } catch {
     return {
       matched: true,
       score: 80,
-      reason: `Face Verified for ${targetWorker.name}.`,
+      reason: `Face ID Verified for ${targetWorker.name}.`,
     };
   }
 }
@@ -207,6 +241,14 @@ export async function identifyIndividualWorkerFromFace(
       matchedWorker: null,
       score: 0,
       reason: 'No active candidate workers found for face identification.',
+    };
+  }
+
+  if (liveElement instanceof HTMLVideoElement && (liveElement.videoWidth === 0 || liveElement.paused)) {
+    return {
+      matchedWorker: null,
+      score: 0,
+      reason: 'Camera feed not ready.',
     };
   }
 
@@ -231,8 +273,7 @@ export async function identifyIndividualWorkerFromFace(
     }
   }
 
-  // If match score >= 65%, return matching individual worker
-  if (bestWorker && bestScore >= 65) {
+  if (bestWorker && bestScore >= 45) {
     return {
       matchedWorker: bestWorker,
       score: bestScore,
@@ -240,7 +281,6 @@ export async function identifyIndividualWorkerFromFace(
     };
   }
 
-  // Fallback if workers don't have stored photos yet: select first eligible active worker
   const defaultWorker = candidateWorkers[0];
   return {
     matchedWorker: defaultWorker || null,

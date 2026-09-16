@@ -237,7 +237,6 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
         setPhotoUrl(dataUrl);
       }
     }
-    stopCamera();
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -259,13 +258,10 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     if (!worker) return;
     if (!showLiveCamera || !mediaStreamRef.current) {
       await startCamera();
+      await new Promise((resolve) => setTimeout(resolve, 300));
     }
     setIsScanning(true);
     setScanFeedback(`Extracting 3D facial landmarks for ${worker.name} (${attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'})...`);
-
-    captureCameraSnapshot();
-
-    await new Promise((resolve) => setTimeout(resolve, 800));
 
     let verifyResult: { matched: boolean; score: number; reason: string } = { matched: true, score: 85, reason: '' };
     if (videoRef.current) {
@@ -273,6 +269,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
       verifyResult = { matched: res.matched, score: res.score, reason: res.reason || '' };
     }
 
+    captureCameraSnapshot();
     setIsScanning(false);
 
     if (verifyResult.matched) {
