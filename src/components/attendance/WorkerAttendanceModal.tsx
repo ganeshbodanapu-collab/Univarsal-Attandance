@@ -71,6 +71,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
   const [remarks, setRemarks] = useState<string>('');
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [scanFeedback, setScanFeedback] = useState<string | null>(null);
+  const [scanSuccess, setScanSuccess] = useState<boolean | null>(null);
   const [showLiveCamera, setShowLiveCamera] = useState<boolean>(false);
 
   // Deployment location state (Site & Section)
@@ -172,6 +173,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
       setSiteAmountRemarks('');
     }
     setScanFeedback(null);
+    setScanSuccess(null);
     stopCamera();
   }, [worker, site, section, date, isOpen, initialTab, initialMode, defaultSiteAmountGiven]);
 
@@ -274,6 +276,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     setIsScanning(false);
 
     if (verifyResult.matched) {
+      setScanSuccess(true);
       setScanFeedback(verifyResult.reason || `Face ID Verified for ${worker.name}`);
       if (attendanceMode === 'checkIn') {
         saveAttendanceRecord('face', 'present', new Date().toTimeString().substring(0, 5), undefined);
@@ -281,6 +284,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
         saveAttendanceRecord('face', 'present', existingAttendance?.checkIn || '08:30', new Date().toTimeString().substring(0, 5));
       }
     } else {
+      setScanSuccess(false);
       setScanFeedback(verifyResult.reason || `Face Mismatch: Scanned face does not match ${worker.name}'s enrolled Face ID profile.`);
     }
   };
@@ -293,6 +297,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     await new Promise((resolve) => setTimeout(resolve, 1100));
 
     setIsScanning(false);
+    setScanSuccess(true);
     setScanFeedback(`Fingerprint Matched — ${attendanceMode === 'checkIn' ? 'Checked IN' : 'Checked OUT'}`);
 
     // Save attendance immediately
@@ -979,10 +984,43 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
               )}
 
               {scanFeedback && !isScanning && (
-                <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center space-y-2 z-30 p-4">
-                  <CheckCircle2 className="h-14 w-14 text-emerald-400 animate-bounce" />
-                  <p className="text-sm font-bold text-emerald-300">{scanFeedback}</p>
-                  <p className="text-xs text-slate-300">Marked as Present at {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                <div className={`absolute inset-0 backdrop-blur-md flex flex-col items-center justify-center space-y-3 z-30 p-6 transition-all ${
+                  scanSuccess ? 'bg-slate-950/85' : 'bg-rose-950/95'
+                }`}>
+                  {scanSuccess ? (
+                    <>
+                      <div className="h-16 w-16 rounded-full bg-emerald-500/20 border-2 border-emerald-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                        <CheckCircle2 className="h-10 w-10 text-emerald-400 animate-bounce" />
+                      </div>
+                      <p className="text-sm font-black text-emerald-300 tracking-wide text-center">{scanFeedback}</p>
+                      <p className="text-xs font-semibold text-slate-300">
+                        Marked as Present at {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="h-16 w-16 rounded-full bg-rose-500/20 border-2 border-rose-500 flex items-center justify-center shadow-lg shadow-rose-500/20">
+                        <AlertCircle className="h-10 w-10 text-rose-400 animate-pulse" />
+                      </div>
+                      <p className="text-xs font-black uppercase tracking-widest text-rose-400">Verification Rejected</p>
+                      <p className="text-xs font-bold text-rose-200 text-center max-w-xs">{scanFeedback}</p>
+                      <p className="text-[11px] text-rose-300/80 font-semibold text-center">Attendance registration was blocked due to face mismatch.</p>
+                      <div className="pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setScanFeedback(null);
+                            setScanSuccess(null);
+                            startCamera();
+                          }}
+                          className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer flex items-center space-x-1.5"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          <span>Try Scanning Again</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -1018,9 +1056,28 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
                 </div>
               ) : scanFeedback ? (
                 <div className="space-y-2 flex flex-col items-center">
-                  <CheckCircle2 className="h-14 w-14 text-emerald-400 animate-bounce" />
-                  <p className="text-sm font-bold text-emerald-300">{scanFeedback}</p>
-                  <p className="text-xs text-slate-300">Marked as Present at {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                  {scanSuccess ? (
+                    <>
+                      <CheckCircle2 className="h-14 w-14 text-emerald-400 animate-bounce" />
+                      <p className="text-sm font-bold text-emerald-300">{scanFeedback}</p>
+                      <p className="text-xs text-slate-300">Marked as Present at {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                    </>
+                  ) : (
+                    <>
+                      <AlertCircle className="h-14 w-14 text-rose-400 animate-pulse" />
+                      <p className="text-sm font-bold text-rose-300">{scanFeedback}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setScanFeedback(null);
+                          setScanSuccess(null);
+                        }}
+                        className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-md cursor-pointer mt-2"
+                      >
+                        Try Again
+                      </button>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3 flex flex-col items-center">
