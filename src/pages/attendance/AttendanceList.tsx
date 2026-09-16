@@ -43,8 +43,8 @@ export const AttendanceList: React.FC = () => {
     currentUser,
   } = useAttendanceContext();
 
-  // 2-Part Sub-Navigation Tab State (Part 1 Check-In vs Part 2 Check-Out)
-  const [partTab, setPartTab] = useState<'checkIn' | 'checkOut'>('checkIn');
+  // 3-View Sub-Navigation Tab State (Main Page All Roster vs Check-In List vs Check-Out List)
+  const [partTab, setPartTab] = useState<'all' | 'checkIn' | 'checkOut'>('all');
 
   // Attendance Punch Modal State
   const [modalWorker, setModalWorker] = useState<Worker | null>(null);
@@ -100,36 +100,89 @@ export const AttendanceList: React.FC = () => {
     }
   };
 
-  // 1. Process & Filter Data
-  const baseProcessedData = attendance
-    .map((record) => {
-      const worker = workers.find((w) => w.id === record.workerId);
-      const assignment = assignments.find((asg) => asg.id === record.assignmentId);
-      const site = sites.find((s) => s.id === assignment?.siteId);
-      const section = sections.find((sec) => sec.id === assignment?.sectionId);
+  // 1. Process Unified Roster & Attendance Data
+  const targetDateForStats = filterDate || new Date().toISOString().split('T')[0];
 
+  // Map all active workers assigned to the selected site & section
+  const assignedWorkersForView = workers.filter((w) => {
+    if (w.status !== 'active') return false;
+    if (filterSite && w.currentSiteId !== filterSite) return false;
+    if (filterSection && w.currentSectionId !== filterSection) return false;
+    return true;
+  });
+
+  const baseProcessedData = assignedWorkersForView.map((worker) => {
+    const existingRecord = attendance.find((a) => a.workerId === worker.id && a.date === targetDateForStats);
+    const assignment = assignments.find((asg) => asg.id === existingRecord?.assignmentId) ||
+      assignments.find((asg) => asg.workerId === worker.id && asg.toDate === null);
+    const site = sites.find((s) => s.id === (existingRecord?.siteId || worker.currentSiteId));
+    const section = sections.find((sec) => sec.id === (existingRecord?.sectionId || worker.currentSectionId));
+
+    if (existingRecord) {
       return {
-        ...record,
-        workerName: worker?.name || 'Unknown',
-        workerType: worker?.workerType || 'company',
-        dailyWage: worker?.dailyWage || 0,
-        commissionRate: worker?.commissionRate || 0,
+        ...existingRecord,
+        workerName: worker.name,
+        workerType: worker.workerType,
+        dailyWage: worker.dailyWage || 0,
+        commissionRate: worker.commissionRate || 0,
         siteName: site?.name || 'Unassigned Site',
         sectionName: section?.name || 'Unassigned Section',
-        siteId: assignment?.siteId || '',
-        sectionId: assignment?.sectionId || '',
+        siteId: existingRecord.siteId || worker.currentSiteId || '',
+        sectionId: existingRecord.sectionId || worker.currentSectionId || '',
+        isMarked: true,
       };
-    });
+    }
+
+    return {
+      id: `PENDING-${worker.id}`,
+      workerId: worker.id,
+      assignmentId: assignment?.id || `ASG-${worker.currentSiteId}-${worker.currentSectionId || 'SEC001'}`,
+      date: targetDateForStats,
+      status: 'not_marked' as any,
+      method: 'manual' as any,
+      checkIn: undefined,
+      checkOut: undefined,
+      workerName: worker.name,
+      workerType: worker.workerType,
+      dailyWage: worker.dailyWage || 0,
+      commissionRate: worker.commissionRate || 0,
+      siteName: site?.name || 'Unassigned Site',
+      sectionName: section?.name || 'Unassigned Section',
+      siteId: worker.currentSiteId || '',
+      sectionId: worker.currentSectionId || '',
+      isMarked: false,
+    };
+  });
+
+  // Also include any attendance records for non-primary workers on this date
+  attendance.forEach((record) => {
+    if (record.date === targetDateForStats && (!filterSite || record.siteId === filterSite)) {
+      if (!baseProcessedData.some((r) => r.workerId === record.workerId)) {
+        const worker = workers.find((w) => w.id === record.workerId);
+        const assignment = assignments.find((asg) => asg.id === record.assignmentId);
+        const site = sites.find((s) => s.id === assignment?.siteId);
+        const section = sections.find((sec) => sec.id === assignment?.sectionId);
+        baseProcessedData.push({
+          ...record,
+          workerName: worker?.name || 'Unknown',
+          workerType: worker?.workerType || 'company',
+          dailyWage: worker?.dailyWage || 0,
+          commissionRate: worker?.commissionRate || 0,
+          siteName: site?.name || 'Unassigned Site',
+          sectionName: section?.name || 'Unassigned Section',
+          siteId: assignment?.siteId || '',
+          sectionId: assignment?.sectionId || '',
+          isMarked: true,
+        });
+      }
+    }
+  });
 
   // Calculate summary stat counts for today / selected filter
-  const targetDateForStats = filterDate || new Date().toISOString().split('T')[0];
-  const statsDateRecords = baseProcessedData.filter(
-    (row) => row.date === targetDateForStats && (!filterSite || row.siteId === filterSite)
-  );
-  const statTotalRecords = statsDateRecords.length;
-  const statCheckedInCount = statsDateRecords.filter((r) => r.checkIn && !r.checkOut).length;
-  const statCheckedOutCount = statsDateRecords.filter((r) => r.checkIn && r.checkOut).length;
-  const statAbsentCount = statsDateRecords.filter((r) => r.status === 'absent' || r.status === 'leave').length;
+  const statTotalWorkers = baseProcessedData.length;
+  const statCheckedInCount = baseProcessedData.filter((r) => r.checkIn && !r.checkOut).length;
+  const statCheckedOutCount = baseProcessedData.filter((r) => r.checkIn && r.checkOut).length;
+  const statPendingCount = baseProcessedData.filter((r) => !r.checkIn && r.status !== 'absent' && r.status !== 'leave').length;
 
   const filteredData = baseProcessedData.filter((row) => {
     if (filterDate && row.date !== filterDate) return false;
@@ -145,11 +198,17 @@ export const AttendanceList: React.FC = () => {
     ) {
       return false;
     }
-    // AUTOMATIC HANDOFF FILTER FOR PART 2 CHECK-OUT ROSTER:
-    // Display ONLY workers who have Checked In today!
-    if (partTab === 'checkOut') {
-      if (!row.checkIn) return false;
+
+    // 3-VIEW TAB FILTERING:
+    // 1. 'all': Main Page showing ALL site employees
+    // 2. 'checkIn': Shows employees needing Check-In or recently checked in
+    // 3. 'checkOut': AUTOMATICALLY populates ONLY employees who have Checked In today!
+    if (partTab === 'checkIn') {
+      if (row.checkOut) return false; // hide completed check-outs from check-in tab
+    } else if (partTab === 'checkOut') {
+      if (!row.checkIn) return false; // ONLY show checked-in workers awaiting or completed check-out!
     }
+
     return true;
   });
 
@@ -213,7 +272,33 @@ export const AttendanceList: React.FC = () => {
       header: 'Status',
       accessor: 'status',
       sortable: true,
-      render: (row) => <StatusBadge status={row.status} />,
+      render: (row) => {
+        if (row.checkIn && !row.checkOut) {
+          return (
+            <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1">
+              <LogIn className="h-3.5 w-3.5 text-emerald-600" />
+              <span>Checked-In ({row.checkIn})</span>
+            </span>
+          );
+        }
+        if (row.checkIn && row.checkOut) {
+          return (
+            <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-indigo-100 text-indigo-800 border border-indigo-300 inline-flex items-center space-x-1">
+              <CheckCircle2 className="h-3.5 w-3.5 text-indigo-600" />
+              <span>Shift Completed ({row.checkOut})</span>
+            </span>
+          );
+        }
+        if (row.status === 'absent' || row.status === 'leave') {
+          return <StatusBadge status={row.status} />;
+        }
+        return (
+          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200 inline-flex items-center space-x-1">
+            <Clock className="h-3.5 w-3.5 text-slate-400" />
+            <span>Not Checked-In</span>
+          </span>
+        );
+      },
     },
     {
       header: 'Method',
@@ -221,7 +306,7 @@ export const AttendanceList: React.FC = () => {
       sortable: true,
       render: (row) => (
         <span className="capitalize text-xs font-semibold px-2 py-0.5 border rounded border-gray-150 bg-gray-50 text-gray-600">
-          {row.method}
+          {row.method || 'manual'}
         </span>
       ),
     },
@@ -247,14 +332,14 @@ export const AttendanceList: React.FC = () => {
       render: (row) => {
         if (row.workerType !== 'outside') return <span className="text-gray-400">-</span>;
         const wage = calculateDailyWage(row.status, row.dailyWage, settings);
-        return <span className="font-semibold">â‚¹{wage}</span>;
+        return <span className="font-semibold">₹{wage}</span>;
       },
     },
     {
       header: 'Commission',
       render: (row) => {
         const commission = calculateCommission(row.status, row.commissionRate, settings);
-        return <span className="font-semibold text-gray-700">â‚¹{commission}</span>;
+        return <span className="font-semibold text-gray-700">₹{commission}</span>;
       },
     },
     {
@@ -269,7 +354,7 @@ export const AttendanceList: React.FC = () => {
                   setModalWorker(targetWorker);
                   setModalMode('checkIn');
                 }}
-                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded text-xs font-bold inline-flex items-center space-x-1 transition-colors"
+                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded text-xs font-bold inline-flex items-center space-x-1 transition-colors cursor-pointer"
                 title="Punch In Employee"
               >
                 <LogIn className="h-3.5 w-3.5" />
@@ -281,7 +366,7 @@ export const AttendanceList: React.FC = () => {
                   setModalWorker(targetWorker);
                   setModalMode('checkOut');
                 }}
-                className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-300 rounded text-xs font-bold inline-flex items-center space-x-1 transition-colors"
+                className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-300 rounded text-xs font-bold inline-flex items-center space-x-1 transition-colors cursor-pointer"
                 title="Punch Out Employee"
               >
                 <LogOut className="h-3.5 w-3.5" />
@@ -293,7 +378,7 @@ export const AttendanceList: React.FC = () => {
                   setModalWorker(targetWorker);
                   setModalMode('checkOut');
                 }}
-                className="px-2.5 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-semibold inline-flex items-center space-x-1 transition-colors"
+                className="px-2.5 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-semibold inline-flex items-center space-x-1 transition-colors cursor-pointer"
                 title="Completed — Re-Punch / Edit"
               >
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
@@ -303,18 +388,18 @@ export const AttendanceList: React.FC = () => {
 
             <button
               onClick={() => {
-                setSelectedEditRecord(row);
+                setSelectedEditRecord(row as any);
                 setEditStatus(row.status);
                 setAuditReason('');
               }}
-              className="p-1 text-gray-500 hover:text-gray-900 hover:bg-gray-150 rounded"
+              className="p-1 text-gray-500 hover:text-gray-900 hover:bg-gray-150 rounded cursor-pointer"
               title="Edit Log"
             >
               <Edit2 className="h-4 w-4" />
             </button>
             <button
               onClick={() => setSelectedAuditWorkerId(row.workerId)}
-              className="p-1 text-gray-500 hover:text-gray-900 hover:bg-gray-150 rounded"
+              className="p-1 text-gray-500 hover:text-gray-900 hover:bg-gray-150 rounded cursor-pointer"
               title="Audit History"
             >
               <History className="h-4 w-4" />
@@ -353,7 +438,7 @@ export const AttendanceList: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Employees Roster &amp; Daily Attendance Log</h1>
-          <p className="text-sm text-gray-500">2-Part Check-In &amp; Check-Out Workflow with Biometrics &amp; Manual Verification.</p>
+          <p className="text-sm text-gray-500">Main Page Roster with Automatic Handoff to Check-Out List.</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -381,22 +466,40 @@ export const AttendanceList: React.FC = () => {
         </div>
       </div>
 
-      {/* 2-Part Sub-Navigation Tabs */}
+      {/* 3-View Sub-Navigation Tabs */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between bg-slate-100 p-1.5 rounded-2xl border border-slate-200 gap-2">
         <div className="flex items-center space-x-2 flex-1">
+          <button
+            onClick={() => {
+              setPartTab('all');
+              setCurrentPage(1);
+            }}
+            className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+              partTab === 'all'
+                ? 'bg-blue-600 text-white shadow-md'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+            }`}
+          >
+            <Users className="h-4 w-4" />
+            <span>📋 Main Page (All Site Roster)</span>
+            <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-blue-100 text-blue-900">
+              {statTotalWorkers}
+            </span>
+          </button>
+
           <button
             onClick={() => {
               setPartTab('checkIn');
               setCurrentPage(1);
             }}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+            className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
               partTab === 'checkIn'
                 ? 'bg-emerald-600 text-white shadow-md'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
             }`}
           >
             <LogIn className="h-4 w-4" />
-            <span>📥 Part 1: Check-In Roster (Punch In)</span>
+            <span>📥 Part 1: Check-In List (Punch In)</span>
           </button>
 
           <button
@@ -404,14 +507,14 @@ export const AttendanceList: React.FC = () => {
               setPartTab('checkOut');
               setCurrentPage(1);
             }}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+            className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
               partTab === 'checkOut'
                 ? 'bg-indigo-600 text-white shadow-md'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
             }`}
           >
             <LogOut className="h-4 w-4" />
-            <span>📤 Part 2: Check-Out Roster (Punch Out)</span>
+            <span>📤 Part 2: Check-Out List (Punch Out)</span>
             {statCheckedInCount > 0 && (
               <span className="ml-1.5 px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-400 text-slate-950 animate-pulse">
                 {statCheckedInCount} Awaiting
@@ -425,11 +528,21 @@ export const AttendanceList: React.FC = () => {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-white p-3.5 border border-slate-200 rounded-2xl shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Roster</p>
-            <p className="text-lg font-black text-slate-900 mt-0.5">{statTotalRecords}</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Site Roster</p>
+            <p className="text-lg font-black text-slate-900 mt-0.5">{statTotalWorkers}</p>
           </div>
           <div className="h-9 w-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
             <Users className="h-5 w-5" />
+          </div>
+        </div>
+
+        <div className="bg-white p-3.5 border border-slate-200 rounded-2xl shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Pending Check-In</p>
+            <p className="text-lg font-black text-amber-700 mt-0.5">{statPendingCount}</p>
+          </div>
+          <div className="h-9 w-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+            <Clock className="h-5 w-5" />
           </div>
         </div>
 
@@ -450,16 +563,6 @@ export const AttendanceList: React.FC = () => {
           </div>
           <div className="h-9 w-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
             <LogOut className="h-5 w-5" />
-          </div>
-        </div>
-
-        <div className="bg-white p-3.5 border border-slate-200 rounded-2xl shadow-xs flex items-center justify-between">
-          <div>
-            <p className="text-[10px] font-bold text-rose-500 uppercase tracking-wider">Absent / Leave</p>
-            <p className="text-lg font-black text-rose-600 mt-0.5">{statAbsentCount}</p>
-          </div>
-          <div className="h-9 w-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
-            <Clock className="h-5 w-5" />
           </div>
         </div>
       </div>
