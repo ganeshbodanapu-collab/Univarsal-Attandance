@@ -895,8 +895,8 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const updated: Attendance = {
         ...existing,
         ...record,
-        checkIn: checkIn ?? existing.checkIn,
-        checkOut: checkOut ?? existing.checkOut,
+        checkIn: (checkIn && checkIn.trim() !== '') ? checkIn : existing.checkIn,
+        checkOut: (checkOut && checkOut.trim() !== '') ? checkOut : existing.checkOut,
         photoUrl: record.photoUrl !== undefined ? record.photoUrl : existing.photoUrl,
         remarks: record.remarks !== undefined ? record.remarks : existing.remarks,
         markedBy: record.markedBy !== undefined ? record.markedBy : existing.markedBy,

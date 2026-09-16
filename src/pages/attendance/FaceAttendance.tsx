@@ -119,7 +119,7 @@ export const FaceAttendance: React.FC = () => {
       } else {
         setScannedResult({
           worker: matchedWorker,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          timestamp: new Date().toTimeString().substring(0, 5),
         });
       }
     } catch (err: any) {
