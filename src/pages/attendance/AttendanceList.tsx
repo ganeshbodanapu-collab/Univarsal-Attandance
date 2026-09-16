@@ -1,6 +1,6 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAttendanceContext } from '../../context/AttendanceContext';
-import type { Attendance } from '../../types';
+import type { Attendance, Worker } from '../../types';
 import { DataTable } from '../../components/common/DataTable';
 import type { Column } from '../../components/common/DataTable';
 import { FilterBar } from '../../components/common/FilterBar';
@@ -12,11 +12,12 @@ import { Drawer } from '../../components/common/Drawer';
 import { Modal } from '../../components/common/Modal';
 import { Toast } from '../../components/common/Toast';
 import { Pagination } from '../../components/common/Pagination';
+import { WorkerAttendanceModal } from '../../components/attendance/WorkerAttendanceModal';
 import { calculateFood } from '../../utils/calculations/calculateFood';
 import { calculateDailyWage } from '../../utils/calculations/calculateWage';
 import { calculateCommission } from '../../utils/calculations/calculateCommission';
 import { Link } from 'react-router-dom';
-import { Camera, Fingerprint, CalendarDays, History, Edit2 } from 'lucide-react';
+import { Camera, Fingerprint, CalendarDays, History, Edit2, LogIn, LogOut, Users, CheckCircle2, Clock } from 'lucide-react';
 
 interface AttendanceRow extends Attendance {
   workerName: string;
@@ -41,6 +42,13 @@ export const AttendanceList: React.FC = () => {
     updateAttendanceStatus,
     currentUser,
   } = useAttendanceContext();
+
+  // 2-Part Sub-Navigation Tab State (Part 1 Check-In vs Part 2 Check-Out)
+  const [partTab, setPartTab] = useState<'checkIn' | 'checkOut'>('checkIn');
+
+  // Attendance Punch Modal State
+  const [modalWorker, setModalWorker] = useState<Worker | null>(null);
+  const [modalMode, setModalMode] = useState<'checkIn' | 'checkOut'>('checkIn');
 
   // Filters State
   const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0]); // default to today
@@ -93,7 +101,7 @@ export const AttendanceList: React.FC = () => {
   };
 
   // 1. Process & Filter Data
-  const filteredData = attendance
+  const baseProcessedData = attendance
     .map((record) => {
       const worker = workers.find((w) => w.id === record.workerId);
       const assignment = assignments.find((asg) => asg.id === record.assignmentId);
@@ -111,23 +119,39 @@ export const AttendanceList: React.FC = () => {
         siteId: assignment?.siteId || '',
         sectionId: assignment?.sectionId || '',
       };
-    })
-    .filter((row) => {
-      if (filterDate && row.date !== filterDate) return false;
-      if (filterSite && row.siteId !== filterSite) return false;
-      if (filterSection && row.sectionId !== filterSection) return false;
-      if (filterWorkerType && row.workerType !== filterWorkerType) return false;
-      if (filterStatus && row.status !== filterStatus) return false;
-      if (filterMethod && row.method !== filterMethod) return false;
-      if (
-        searchWorker &&
-        !row.workerName.toLowerCase().includes(searchWorker.toLowerCase()) &&
-        !row.workerId.toLowerCase().includes(searchWorker.toLowerCase())
-      ) {
-        return false;
-      }
-      return true;
     });
+
+  // Calculate summary stat counts for today / selected filter
+  const targetDateForStats = filterDate || new Date().toISOString().split('T')[0];
+  const statsDateRecords = baseProcessedData.filter(
+    (row) => row.date === targetDateForStats && (!filterSite || row.siteId === filterSite)
+  );
+  const statTotalRecords = statsDateRecords.length;
+  const statCheckedInCount = statsDateRecords.filter((r) => r.checkIn && !r.checkOut).length;
+  const statCheckedOutCount = statsDateRecords.filter((r) => r.checkIn && r.checkOut).length;
+  const statAbsentCount = statsDateRecords.filter((r) => r.status === 'absent' || r.status === 'leave').length;
+
+  const filteredData = baseProcessedData.filter((row) => {
+    if (filterDate && row.date !== filterDate) return false;
+    if (filterSite && row.siteId !== filterSite) return false;
+    if (filterSection && row.sectionId !== filterSection) return false;
+    if (filterWorkerType && row.workerType !== filterWorkerType) return false;
+    if (filterStatus && row.status !== filterStatus) return false;
+    if (filterMethod && row.method !== filterMethod) return false;
+    if (
+      searchWorker &&
+      !row.workerName.toLowerCase().includes(searchWorker.toLowerCase()) &&
+      !row.workerId.toLowerCase().includes(searchWorker.toLowerCase())
+    ) {
+      return false;
+    }
+    // AUTOMATIC HANDOFF FILTER FOR PART 2 CHECK-OUT ROSTER:
+    // Display ONLY workers who have Checked In today!
+    if (partTab === 'checkOut') {
+      if (!row.checkIn) return false;
+    }
+    return true;
+  });
 
   // 2. Sort Data
   const sortedData = [...filteredData].sort((a, b) => {
@@ -235,28 +259,69 @@ export const AttendanceList: React.FC = () => {
     },
     {
       header: 'Actions',
-      render: (row) => (
-        <div className="flex items-center space-x-2.5">
-          <button
-            onClick={() => {
-              setSelectedEditRecord(row);
-              setEditStatus(row.status);
-              setAuditReason('');
-            }}
-            className="p-1 text-gray-500 hover:text-gray-900 hover:bg-gray-150 rounded"
-            title="Edit Log"
-          >
-            <Edit2 className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setSelectedAuditWorkerId(row.workerId)}
-            className="p-1 text-gray-500 hover:text-gray-900 hover:bg-gray-150 rounded"
-            title="Audit History"
-          >
-            <History className="h-4 w-4" />
-          </button>
-        </div>
-      ),
+      render: (row) => {
+        const targetWorker = workers.find((w) => w.id === row.workerId) || null;
+        return (
+          <div className="flex items-center space-x-2">
+            {!row.checkIn ? (
+              <button
+                onClick={() => {
+                  setModalWorker(targetWorker);
+                  setModalMode('checkIn');
+                }}
+                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded text-xs font-bold inline-flex items-center space-x-1 transition-colors"
+                title="Punch In Employee"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                <span>Punch In</span>
+              </button>
+            ) : !row.checkOut ? (
+              <button
+                onClick={() => {
+                  setModalWorker(targetWorker);
+                  setModalMode('checkOut');
+                }}
+                className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-300 rounded text-xs font-bold inline-flex items-center space-x-1 transition-colors"
+                title="Punch Out Employee"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                <span>Punch Out</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  setModalWorker(targetWorker);
+                  setModalMode('checkOut');
+                }}
+                className="px-2.5 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-semibold inline-flex items-center space-x-1 transition-colors"
+                title="Completed — Re-Punch / Edit"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                <span>Complete</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => {
+                setSelectedEditRecord(row);
+                setEditStatus(row.status);
+                setAuditReason('');
+              }}
+              className="p-1 text-gray-500 hover:text-gray-900 hover:bg-gray-150 rounded"
+              title="Edit Log"
+            >
+              <Edit2 className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setSelectedAuditWorkerId(row.workerId)}
+              className="p-1 text-gray-500 hover:text-gray-900 hover:bg-gray-150 rounded"
+              title="Audit History"
+            >
+              <History className="h-4 w-4" />
+            </button>
+          </div>
+        );
+      },
     },
   ];
 
@@ -287,8 +352,8 @@ export const AttendanceList: React.FC = () => {
       {/* Header and Quick Navigation */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Attendance Log</h1>
-          <p className="text-sm text-gray-500">Filter, search, and verify workforce daily attendance logs.</p>
+          <h1 className="text-2xl font-bold text-gray-900">Employees Roster &amp; Daily Attendance Log</h1>
+          <p className="text-sm text-gray-500">2-Part Check-In &amp; Check-Out Workflow with Biometrics &amp; Manual Verification.</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -296,15 +361,15 @@ export const AttendanceList: React.FC = () => {
             to="/attendance/face"
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors text-xs font-semibold inline-flex items-center space-x-1.5 shadow-sm"
           >
-            <Camera className="h-4 w-4 text-gray-500" />
-            <span>Face Check-in</span>
+            <Camera className="h-4 w-4 text-cyan-600" />
+            <span>Face Terminal</span>
           </Link>
           <Link
             to="/attendance/fingerprint"
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors text-xs font-semibold inline-flex items-center space-x-1.5 shadow-sm"
           >
-            <Fingerprint className="h-4 w-4 text-gray-500" />
-            <span>Fingerprint Check-in</span>
+            <Fingerprint className="h-4 w-4 text-purple-600" />
+            <span>Fingerprint Terminal</span>
           </Link>
           <Link
             to="/attendance/manual"
@@ -313,6 +378,89 @@ export const AttendanceList: React.FC = () => {
             <CalendarDays className="h-4 w-4" />
             <span>Manual Sheet Entry</span>
           </Link>
+        </div>
+      </div>
+
+      {/* 2-Part Sub-Navigation Tabs */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between bg-slate-100 p-1.5 rounded-2xl border border-slate-200 gap-2">
+        <div className="flex items-center space-x-2 flex-1">
+          <button
+            onClick={() => {
+              setPartTab('checkIn');
+              setCurrentPage(1);
+            }}
+            className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+              partTab === 'checkIn'
+                ? 'bg-emerald-600 text-white shadow-md'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+            }`}
+          >
+            <LogIn className="h-4 w-4" />
+            <span>📥 Part 1: Check-In Roster (Punch In)</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setPartTab('checkOut');
+              setCurrentPage(1);
+            }}
+            className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+              partTab === 'checkOut'
+                ? 'bg-indigo-600 text-white shadow-md'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+            }`}
+          >
+            <LogOut className="h-4 w-4" />
+            <span>📤 Part 2: Check-Out Roster (Punch Out)</span>
+            {statCheckedInCount > 0 && (
+              <span className="ml-1.5 px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-400 text-slate-950 animate-pulse">
+                {statCheckedInCount} Awaiting
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Stat Cards Summary Header */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-white p-3.5 border border-slate-200 rounded-2xl shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Roster</p>
+            <p className="text-lg font-black text-slate-900 mt-0.5">{statTotalRecords}</p>
+          </div>
+          <div className="h-9 w-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+            <Users className="h-5 w-5" />
+          </div>
+        </div>
+
+        <div className="bg-white p-3.5 border border-slate-200 rounded-2xl shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Checked-In (Awaiting Out)</p>
+            <p className="text-lg font-black text-emerald-700 mt-0.5">{statCheckedInCount}</p>
+          </div>
+          <div className="h-9 w-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+            <LogIn className="h-5 w-5" />
+          </div>
+        </div>
+
+        <div className="bg-white p-3.5 border border-slate-200 rounded-2xl shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Checked-Out (Completed)</p>
+            <p className="text-lg font-black text-indigo-700 mt-0.5">{statCheckedOutCount}</p>
+          </div>
+          <div className="h-9 w-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+            <LogOut className="h-5 w-5" />
+          </div>
+        </div>
+
+        <div className="bg-white p-3.5 border border-slate-200 rounded-2xl shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold text-rose-500 uppercase tracking-wider">Absent / Leave</p>
+            <p className="text-lg font-black text-rose-600 mt-0.5">{statAbsentCount}</p>
+          </div>
+          <div className="h-9 w-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+            <Clock className="h-5 w-5" />
+          </div>
         </div>
       </div>
 
@@ -545,6 +693,19 @@ export const AttendanceList: React.FC = () => {
           </div>
         )}
       </Modal>
+
+      {/* Worker Check-In / Check-Out Attendance Modal */}
+      {modalWorker && (
+        <WorkerAttendanceModal
+          isOpen={!!modalWorker}
+          onClose={() => setModalWorker(null)}
+          worker={modalWorker}
+          initialMode={modalMode}
+          onSuccess={(workerName, message) => {
+            setToastMessage(`${workerName}: ${message}`);
+          }}
+        />
+      )}
 
       {toastMessage && (
         <Toast message={toastMessage} type="success" onClose={() => setToastMessage(null)} />

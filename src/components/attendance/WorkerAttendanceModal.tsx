@@ -27,6 +27,7 @@ export interface WorkerAttendanceModalProps {
   sections?: Section[];
   allowSiteSelection?: boolean;
   initialTab?: 'manual' | 'face' | 'fingerprint';
+  initialMode?: 'checkIn' | 'checkOut';
   defaultSiteAmountGiven?: number;
   onSuccess?: (workerName: string, message: string) => void;
 }
@@ -41,6 +42,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
   sections,
   allowSiteSelection = true,
   initialTab,
+  initialMode,
   defaultSiteAmountGiven,
   onSuccess,
 }) => {
@@ -56,6 +58,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
   const allSites = sites && sites.length > 0 ? sites : contextSites;
   const allSections = sections && sections.length > 0 ? sections : contextSections;
 
+  const [attendanceMode, setAttendanceMode] = useState<'checkIn' | 'checkOut'>('checkIn');
   const [activeTab, setActiveTab] = useState<'manual' | 'face' | 'fingerprint'>('manual');
   const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [status, setStatus] = useState<Attendance['status']>('present');
@@ -122,10 +125,18 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
       setSelectedSectionId(worker.currentSectionId);
     }
 
+    if (initialMode) {
+      setAttendanceMode(initialMode);
+    } else if (existingAttendance?.checkIn && !existingAttendance?.checkOut) {
+      setAttendanceMode('checkOut');
+    } else {
+      setAttendanceMode('checkIn');
+    }
+
     if (existingAttendance) {
       setStatus(existingAttendance.status);
       setCheckInTime(existingAttendance.checkIn || '08:30');
-      setCheckOutTime(existingAttendance.checkOut || '');
+      setCheckOutTime(existingAttendance.checkOut || new Date().toTimeString().substring(0, 5) || '17:30');
       setPhotoUrl(existingAttendance.photoUrl || null);
       setRemarks(existingAttendance.remarks || '');
       setActiveTab(existingAttendance.method || initialTab || 'manual');
@@ -159,7 +170,7 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     }
     setScanFeedback(null);
     stopCamera();
-  }, [worker, site, section, date, isOpen, initialTab, defaultSiteAmountGiven]);
+  }, [worker, site, section, date, isOpen, initialTab, initialMode, defaultSiteAmountGiven]);
 
   // Clean up camera stream on unmount or close
   useEffect(() => {
@@ -230,30 +241,38 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
   const handleFaceScan = async () => {
     if (!worker) return;
     setIsScanning(true);
-    setScanFeedback('Aligning face geometry & verifying liveness...');
+    setScanFeedback(`Aligning face geometry for ${attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'}...`);
 
     // Realistic scanning duration
     await new Promise((resolve) => setTimeout(resolve, 1200));
 
     setIsScanning(false);
-    setScanFeedback('Face ID Verified (99.2% confidence)');
+    setScanFeedback(`Face ID Verified — ${attendanceMode === 'checkIn' ? 'Checked IN' : 'Checked OUT'}`);
 
     // Save attendance immediately
-    saveAttendanceRecord('face', 'present', new Date().toTimeString().substring(0, 5), checkOutTime);
+    if (attendanceMode === 'checkIn') {
+      saveAttendanceRecord('face', 'present', new Date().toTimeString().substring(0, 5), undefined);
+    } else {
+      saveAttendanceRecord('face', 'present', existingAttendance?.checkIn || '08:30', new Date().toTimeString().substring(0, 5));
+    }
   };
 
   const handleFingerprintScan = async () => {
     if (!worker) return;
     setIsScanning(true);
-    setScanFeedback('Reading optical biometric sensor & matching template...');
+    setScanFeedback(`Reading fingerprint sensor for ${attendanceMode === 'checkIn' ? 'Check-In' : 'Check-Out'}...`);
 
     await new Promise((resolve) => setTimeout(resolve, 1100));
 
     setIsScanning(false);
-    setScanFeedback(`Fingerprint Matched (Template #FP-${worker.id})`);
+    setScanFeedback(`Fingerprint Matched — ${attendanceMode === 'checkIn' ? 'Checked IN' : 'Checked OUT'}`);
 
     // Save attendance immediately
-    saveAttendanceRecord('fingerprint', 'present', new Date().toTimeString().substring(0, 5), checkOutTime);
+    if (attendanceMode === 'checkIn') {
+      saveAttendanceRecord('fingerprint', 'present', new Date().toTimeString().substring(0, 5), undefined);
+    } else {
+      saveAttendanceRecord('fingerprint', 'present', existingAttendance?.checkIn || '08:30', new Date().toTimeString().substring(0, 5));
+    }
   };
 
   const saveAttendanceRecord = (
@@ -270,8 +289,18 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     );
 
     const finalStatus = customStatus || status;
-    const finalCheckIn = customCheckIn !== undefined ? customCheckIn : checkInTime;
-    const finalCheckOut = customCheckOut !== undefined ? customCheckOut : checkOutTime;
+
+    let finalCheckIn: string | undefined;
+    let finalCheckOut: string | undefined;
+
+    if (attendanceMode === 'checkIn') {
+      finalCheckIn = customCheckIn !== undefined ? customCheckIn : (checkInTime || new Date().toTimeString().substring(0, 5));
+      finalCheckOut = customCheckOut !== undefined ? customCheckOut : (existingAttendance?.checkOut || undefined);
+    } else {
+      finalCheckIn = customCheckIn !== undefined ? customCheckIn : (existingAttendance?.checkIn || checkInTime || '08:30');
+      finalCheckOut = customCheckOut !== undefined ? customCheckOut : (checkOutTime || new Date().toTimeString().substring(0, 5));
+    }
+
     const parsedSiteAmount = hasSiteAmount && siteAmount ? parseFloat(siteAmount) : undefined;
 
     registerOrUpdateAttendance({
@@ -296,9 +325,10 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
     const chosenSiteObj = allSites.find((s) => s.id === selectedSiteId);
 
     if (onSuccess) {
+      const modeLabel = attendanceMode === 'checkIn' ? 'CHECKED IN' : 'CHECKED OUT';
       onSuccess(
         worker.name,
-        `Attendance registered at ${chosenSiteObj?.name || selectedSiteId} (${method.toUpperCase()}: ${finalStatus.toUpperCase()})${
+        `${modeLabel} at ${chosenSiteObj?.name || selectedSiteId} (${method.toUpperCase()}: ${finalStatus.toUpperCase()})${
           parsedSiteAmount ? ` • ₹${parsedSiteAmount} noted as given by site` : ''
         }`
       );
@@ -328,12 +358,38 @@ export const WorkerAttendanceModal: React.FC<WorkerAttendanceModalProps> = ({
         stopCamera();
         onClose();
       }}
-      title="Record Worker Attendance"
+      title={attendanceMode === 'checkIn' ? '📥 Employee Check-In (Punch In)' : '📤 Employee Check-Out (Punch Out)'}
       subtitle={`Working Site: ${allSites.find((s) => s.id === selectedSiteId)?.name || selectedSiteId} • Section: ${allSections.find((s) => s.id === selectedSectionId)?.name || selectedSectionId || 'General Section'}`}
       icon={<UserCheck className="h-5 w-5 text-blue-600" />}
       size="xl"
     >
       <div className="space-y-4">
+        {/* Attendance Mode Switcher (Check-In vs Check-Out) */}
+        <div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
+          <button
+            type="button"
+            onClick={() => setAttendanceMode('checkIn')}
+            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+              attendanceMode === 'checkIn'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            <span>📥 Part 1: Check-In Mode (Punch In)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAttendanceMode('checkOut')}
+            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+              attendanceMode === 'checkOut'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            <span>📤 Part 2: Check-Out Mode (Punch Out)</span>
+          </button>
+        </div>
+
         {/* Worker Info Banner */}
         <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center space-x-3">
